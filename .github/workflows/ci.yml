@@ -1,0 +1,59 @@
+name: CI
+
+# Static gates only — $0, no cloud, no secrets. Mirrors the pharma gym CI pattern.
+# Proves: scripts compile, lint clean, dbt graph parses, seeds load, any GE JSON is valid.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  static-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff dbt-duckdb
+
+      - name: Lint (ruff)
+        run: ruff check scripts/
+
+      - name: Compile Python
+        run: |
+          shopt -s nullglob
+          for f in scripts/*.py; do python -m py_compile "$f"; done
+
+      - name: dbt deps + parse (graph integrity)
+        env:
+          DBT_PROFILES_DIR: ${{ github.workspace }}
+        run: |
+          cp profiles.yml.example profiles.yml
+          dbt deps
+          dbt parse
+
+      - name: dbt seed (seeds load + types)
+        env:
+          DBT_PROFILES_DIR: ${{ github.workspace }}
+        run: dbt seed
+
+      - name: Validate Great Expectations JSON (if any)
+        run: |
+          shopt -s nullglob globstar
+          for f in great_expectations/**/*.json; do
+            python -c "import json,sys; json.load(open('$f'))" && echo "ok: $f"
+          done
+
+      - name: Guard — no secrets / .env committed
+        run: |
+          if git ls-files | grep -E '(^|/)\.env$'; then
+            echo "::error::.env must not be committed"; exit 1
+          fi
+          echo "no .env tracked - ok"

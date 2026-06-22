@@ -1,0 +1,14 @@
+.env
+venv/
+venv_airflow/
+.venv/
+target/
+dbt_packages/
+logs/
+data/
+*.duckdb
+*.parquet
+*.csv
+!seeds/*.csv
+great_expectations/uncommitted/
+__pycache__/

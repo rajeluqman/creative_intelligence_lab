@@ -1,0 +1,8 @@
+version: 2
+models:
+  - name: stg_gemini_raw
+    columns:
+      - name: chunk_id
+        tests: [not_null]
+  - name: stg_meta_perf
+  - name: stg_tiktok_perf

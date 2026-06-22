@@ -1,0 +1,7 @@
+version: 2
+sources:
+  - name: bronze
+    schema: bronze
+    tables:
+      - name: bronze_asset_raw           # verbatim Gemini JSON (immutable, ADR-003)
+      - name: bronze_ad_performance_raw  # verbatim Meta/TikTok CSV (immutable, v1.5)

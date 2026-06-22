@@ -1,0 +1,10 @@
+# Airflow runtime (separate from the dbt-duckdb venv — local Airflow / MWAA host).
+# Pinned to 2.10.3 to match the MWAA image used in the sibling pharma lab.
+# Install + verify the DAG parses (no import errors):
+#   python3 -m venv venv_airflow && . venv_airflow/bin/activate
+#   PYV=$(python -c "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+#   pip install -r requirements-airflow.txt \
+#     --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.10.3/constraints-${PYV}.txt"
+#   AIRFLOW_HOME=/tmp/airflow_home python -c "from airflow.models import DagBag; \
+#     db=DagBag('dags', include_examples=False); assert not db.import_errors, db.import_errors; print(list(db.dags))"
+apache-airflow==2.10.3

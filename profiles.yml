@@ -1,0 +1,9 @@
+# Copy to ~/.dbt/profiles.yml (or set DBT_PROFILES_DIR to this folder).
+creative_intelligence:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "target/dev.duckdb"     # ephemeral local catalog
+      extensions: [httpfs, parquet]
+      # settings: {s3_region: "ap-southeast-1"}   # add for real S3 reads

@@ -1,0 +1,31 @@
+version: 2
+models:
+  - name: fact_ad_performance
+    columns:
+      - name: spend
+        tests: [{dbt_expectations.expect_column_values_to_be_between: {min_value: 0}}]
+      - name: ad_id
+        tests: [not_null]
+  - name: bridge_ad_chunk
+    # DQ gate (cabinet convene 2026-06-22, @data-quality-steward): edit_decision_list is a
+    # HAND-ENTERED seed -> the join grain MUST be pinned, else a duplicate EDL row silently
+    # fans out every downstream perf mart (same bug class as the pharma stg_beta__ndc
+    # 133654->133758 inflation). Gold sign-off BLOCKED until the CRITICAL test below exists.
+    tests:
+      - dbt_utils.unique_combination_of_columns:          # CRITICAL — the grain
+          combination_of_columns: [ad_id, chunk_id, position_in_ad]
+    columns:
+      - name: ad_id
+        tests: [not_null]                                  # HIGH
+      - name: chunk_id
+        tests: [not_null]                                  # HIGH
+      - name: asset_id
+        tests: [not_null]                                  # HIGH — null => inner join to fact_chunk silently degraded
+      - name: position_in_ad
+        tests: [{dbt_expectations.expect_column_values_to_be_between: {min_value: 1}}]   # MEDIUM
+      - name: chunk_role
+        tests: [{accepted_values: {values: ['hook','body','social_proof','cta']}}]
+  - name: mart_chunk_perf_correlation
+    columns:
+      - name: honesty_note
+        tests: [not_null]

@@ -1,0 +1,28 @@
+name: 'creative_intelligence'
+version: '1.0.0'
+config-version: 2
+profile: 'creative_intelligence'
+model-paths: ["models"]
+seed-paths: ["seeds"]
+analysis-paths: ["analyses"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+models:
+  creative_intelligence:
+    staging:      {+materialized: view}
+    intermediate: {+materialized: view}
+    marts:
+      core:        {+materialized: table}
+      performance: {+materialized: table}
+
+seeds:
+  creative_intelligence:
+    # Pin seed column types so DuckDB's CSV sniffer can't disagree (keeps `dbt seed` green in CI).
+    dim_platform:
+      +column_types: {platform_id: varchar, platform_name: varchar, hook_window_sec: integer, hold_milestones: varchar}
+    asset_manifest:
+      +column_types: {asset_id: varchar, asset_name: varchar, asset_type: varchar, parent_asset_id: varchar, duration_sec: integer, source_uri: varchar}
+    edit_decision_list:
+      +column_types: {ad_id: varchar, chunk_id: varchar, chunk_role: varchar, position_in_ad: integer, start_sec: double, end_sec: double}
+    map_ad_asset:
+      +column_types: {ad_id: varchar, asset_id: varchar}

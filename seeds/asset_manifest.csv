@@ -1,0 +1,4 @@
+asset_id,asset_name,asset_type,parent_asset_id,duration_sec,source_uri
+rawhash001,voltecx_raw_shoot_01.mp4,RAW,,600,s3://creative-intel-lake/landing/video/rawhash001.mp4
+rawhash002,voltecx_raw_shoot_02.mp4,RAW,,540,s3://creative-intel-lake/landing/video/rawhash002.mp4
+edithash101,voltecx_ad_energetic_30s.mp4,EDITED,rawhash001,30,s3://creative-intel-lake/landing/video/edithash101.mp4

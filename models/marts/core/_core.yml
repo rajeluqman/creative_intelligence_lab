@@ -1,0 +1,16 @@
+version: 2
+models:
+  - name: dim_asset
+    columns:
+      - name: asset_id
+        tests: [unique, not_null]
+      - name: asset_type
+        tests: [{accepted_values: {values: ['RAW','EDITED']}}]
+  - name: fact_chunk
+    columns:
+      - name: chunk_id
+        tests: [unique, not_null]
+      - name: asset_id
+        tests: [{relationships: {to: ref('dim_asset'), field: asset_id}}]
+      - name: standalone_score
+        tests: [{dbt_expectations.expect_column_values_to_be_between: {min_value: 1, max_value: 5}}]
