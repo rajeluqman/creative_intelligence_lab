@@ -3,7 +3,9 @@
 -- The manifest is the system of record for asset identity; the ingestion script
 -- appends one row per landed video (RAW on arrival; EDITED when an ad cut lands).
 select
-    asset_id,
+    asset_id,                 -- SHA-256(client_id ':' content_sha256) — tenant-scoped (ADR-006)
+    client_id,                -- FK -> dim_client; tenancy boundary, NOT NULL
+    content_sha256,           -- raw byte hash; non-key, intra-client near-dup detection
     parent_asset_id,          -- RAW->EDITED discovery lineage; NULL for RAW
     asset_name,
     asset_type,               -- RAW | EDITED

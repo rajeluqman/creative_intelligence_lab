@@ -9,10 +9,21 @@ performance-correlation** layer. NOT a Kimball star.
 ## 1. Entity map (the whole model on one screen)
 
 ```
+   ┌──────────────────────────────┐
+   │          dim_client          │  tenancy boundary (ADR-006)
+   │  PK client_id                │  client_name, account_support_owner,
+   │     drive_folder_id          │  landing_ttl_days, status   (SCD0 seed)
+   └──────────────┬───────────────┘
+                  │ 1 client → N assets
+                  ▼
                                   ┌──────────────────────────────┐
                           ┌──────►│          dim_asset           │◄────┐  parent_asset_id
-            asset_type    │       │  PK asset_id (SHA-256)       │─────┘  (self-ref, RAW→EDITED,
-            = RAW|EDITED  │       │     parent_asset_id (FK self)│        DISCOVERY ONLY)
+            asset_type    │       │  PK asset_id =SHA256(client_id│─────┘  (self-ref, RAW→EDITED,
+            = RAW|EDITED  │       │     ':' content_sha256)      │        DISCOVERY ONLY)
+                          │       │     client_id (FK→dim_client)│
+                          │       │     content_sha256 (non-key, │
+                          │       │       intra-client near-dup) │
+                          │       │     parent_asset_id (FK self)│
                           │       │     asset_type, duration_sec │
                           │       │     source_uri, dq_flag      │
                           │       └───────────┬──────────────────┘
@@ -65,6 +76,7 @@ performance-correlation** layer. NOT a Kimball star.
 
 | Table | Type | Grain | Layer | Version |
 |-------|------|-------|-------|---------|
+| `dim_client` | dimension | 1 client account | Gold | v1 |
 | `dim_asset` | dimension / node | 1 video asset (RAW or EDITED) | Gold | v1 |
 | `fact_chunk` | fact / feature row | **1 semantic chunk** | Gold | v1 |
 | `bridge_asset_lineage` | bridge / edge | RAW→EDITED pair | Gold | v1 |
@@ -76,11 +88,18 @@ performance-correlation** layer. NOT a Kimball star.
 | `bridge_ad_chunk` | bridge / edge | ad × chunk (editor's cut) | Gold | v1.5 |
 | `fact_extraction_run` | fact (ops) | 1 extraction run | Gold | enhancement |
 
+**11 tables.** (Count excludes the `fct_ad_kpi` / correlation **views** and the v1.5-deferred
+`bridge_client_asset_curation` — see §6.)
+
 **Two grains, two first-class facts:**
 - `fact_chunk` — grain = **semantic chunk** (the unit of creative value).
 - `fact_ad_performance` — grain = **ad × platform × day** (the unit of measured performance).
 - Bridged by `bridge_ad_chunk` — composition is an **asserted fact** (editor's cut), not an
   inference.
+
+`dim_client` is the tenancy boundary (ADR-006): one domain = one dimension. It carries
+client **operational** attributes (`drive_folder_id`, `landing_ttl_days`, `status`) so those
+never overload `dim_asset`.
 
 ---
 
@@ -88,6 +107,7 @@ performance-correlation** layer. NOT a Kimball star.
 
 | From | To | Cardinality | Meaning |
 |------|----|-------------|---------|
+| `dim_client` → `dim_asset` | | 1 : N | tenancy — every asset belongs to exactly one client (ADR-006) |
 | `dim_asset` → `dim_asset` | self | 1 : N | `parent_asset_id` RAW→EDITED (**discovery only**) |
 | `dim_asset` → `fact_chunk` | | 1 : N | one asset fans out to N chunks (in Silver) |
 | `fact_chunk` → `bridge_chunk_compatibility` | | 1 : N | mix-and-match adjacency |
@@ -97,12 +117,17 @@ performance-correlation** layer. NOT a Kimball star.
 | `fact_ad_performance` → `dim_platform` | | N : 1 | metrics semantics per platform |
 | `fact_ad_performance` → `dim_asset` | | N : 1 | only `asset_type='EDITED'` |
 
+> **Client scoping is reached by join, not a stored fact column (ADR-006 / Clean-ERD axis 4):**
+> `fact_chunk.asset_id → dim_asset.client_id`. No `client_id` lives on `fact_chunk`; if a
+> serving surface needs it pre-joined, it appears on a **VIEW**.
+
 ---
 
 ## 4. The three traversals that matter
 
 **T1 — Search (v1 north-star):** `fact_chunk` filtered by theme/sentiment/`standalone_score`
-(+ VSS embedding similarity in v1.5).
+(+ VSS embedding similarity in v1.5), **scoped to one client** via
+`fact_chunk → dim_asset.client_id` (ADR-006).
 
 **T2 — Performance correlation (v1.5):**
 `fact_ad_performance → bridge_ad_chunk → fact_chunk` , aligned by chunk **role** via
@@ -119,7 +144,8 @@ NOT IN (bridge_ad_chunk)`. This is a **search**, never a metric attribution.
 
 | Table | Strategy | Note |
 |-------|----------|------|
-| `dim_asset` | append + SCD0 on identity | asset_id is content hash → immutable identity |
+| `dim_client` | SCD0 reference (seed) | immutable `client_id`; descriptive cols hand-curated, rebuilt each run |
+| `dim_asset` | append + SCD0 on identity | `asset_id = SHA-256(client_id ':' content_sha256)` → immutable tenant-scoped identity (ADR-006) |
 | `fact_chunk` | rebuild from immutable Bronze | non-deterministic source → re-parse, never re-pay |
 | `dim_platform` | SCD0 | reference data, rarely changes |
 | `fact_ad_performance` | daily snapshot, additive | platforms restate → daily grain is the honest one |
@@ -127,10 +153,16 @@ NOT IN (bridge_ad_chunk)`. This is a **search**, never a metric attribution.
 
 ---
 
-## 6. What is deliberately NOT in this model (vetoed → v2)
+## 6. What is deliberately NOT in this model (vetoed → v2 / deferred)
 
 - ❌ Proxy performance on RAW (`parent_asset_id` carries **no** metrics — permanent).
 - ❌ Causal "chunk caused conversion" anything (no table encodes it; needs swap-one-chunk experiment).
 - ❌ Cross-platform pooled metrics (no conformed cross-platform rate column exists by design).
 - ❌ Predictive score column / variant-factory output table / RAG store / dedicated vector DB.
 - ❌ `fact_ad_performance` ratio columns (ratios live only in the `fct_ad_kpi` view).
+- ❌ `client_id` as a stored column on `fact_chunk` (reached by join; serving-view only — axis 4).
+- ⏸️ **Asset removal / re-curation tracking — deferred to v1.5 (ADR-006 §F).** When support
+  staff remove a video from a client's curated set, that membership change is **OUT for v1**.
+  The v1.5 home is `bridge_client_asset_curation` (SCD2 membership of an asset in a client's
+  current curated set). **Landing/Bronze stay append-only — removal never deletes Bronze.**
+  Named here so the deferral is deliberate, not an accidental gap.

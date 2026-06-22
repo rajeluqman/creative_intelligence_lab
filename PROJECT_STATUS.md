@@ -3,7 +3,12 @@
 > Resume checkpoint. Read this BEFORE reading code (token discipline, CLAUDE.md).
 
 ## Where we are
-Standalone scaffold complete; **v1 product NOT built yet** — models are stubs (`where 1=0`).
+Standalone scaffold complete. Core dimension layer is **real and tested**: `dim_client`,
+`dim_asset`, `bridge_asset_lineage` build and pass all FK/uniqueness tests against seeded
+data. Chunk-grain Silver/Gold (`stg_gemini_raw`, `int_chunk_cleaned`, `fact_chunk`, the
+keyword/theme/compatibility bridges) are still wired-but-empty — correct SQL, blocked on
+real Gemini output (no video has been extracted yet; see "Next step when resuming").
+`fact_ad_performance` v1.5 models remain `where 1=0` stubs.
 Architecture of record is ratified (`architecture/`); cabinet of 7 agents seated in `.claude/agents/`.
 
 ## Cabinet convene — 2026-06-22 (roster ruling)
@@ -116,14 +121,65 @@ Captured in `architecture/ADR-005-unified-s3-and-snowflake-serving.md`. Key poin
 - **Provisioning owner-gated** (`aws s3 mb` / Snowflake `CREATE` — confirm first). FinOps preconditions
   before Snowflake: COST_LOG + day-25 teardown + $0 fallback proven first + single-sourced embeddings.
 
+## Multi-client tenancy (ADR-006) + landing TTL (ADR-007) — IMPLEMENTED 2026-06-22
+Owner brief: real agencies run multiple clients + ad-hoc batch triggers + a 30-day landing
+holding period. Convened @data-architect on the brief; owner then directed "implement all of
+it now, before testing with my own Drive folder" (so the as-built code wouldn't need rework
+right after a real test). Both ADRs ratified-with-conditions; all code now matches them, and
+the full chain was tested for real, not just parse-checked:
+- **`architecture/ADR-006-multi-client-tenancy.md`** (new) — `dim_client` dimension;
+  `asset_id = SHA-256(client_id ':' content_sha256)` (tenant-scoped identity, so two clients'
+  byte-identical footage never collides); `client_id` lives on `dim_asset` only, reached on
+  `fact_chunk` by join, never stored there (Clean-ERD axis 4). `DATA_MODEL.md`, `ERD_consolidated.md`,
+  `DATA_DICTIONARY.md`, `STTM.md` amended to match.
+- **`architecture/ADR-007-landing-ttl.md`** (new) — owner chose **hard-delete @ 30 days**,
+  accepting the named consequence (aged non-golden assets become frozen: re-parse from Bronze
+  survives, re-extraction on a new prompt/model does not). Three binding conditions: (1) golden
+  exemption via the structurally-unscanned `landing/_golden/` prefix, (2) no delete without a
+  confirmed Bronze row first, (3) every delete writes a frozen-asset log record.
+- **`scripts/enforce_landing_ttl.py`** (new) — the guarded-delete script the ADR mandates (a
+  bare S3 lifecycle rule can't do the conditional Bronze check). Dry-run by default, `--apply`
+  to actually delete. **Functionally tested for real** against the throwaway `S3_STAGING_BUCKET`
+  (not just parse-checked): aged asset *with* Bronze → deleted + frozen log written; aged asset
+  *without* Bronze → skipped, not deleted. All three conditions verified end-to-end, test
+  artifacts cleaned up after.
+- **`scripts/ingest_drive_to_s3.py` / `run_gemini_extract.py`** — altered to the composite
+  tenant-scoped `asset_id`, client-partitioned S3 paths (`landing/<client_id>/...`,
+  `bronze/<client_id>/...`), and manifest-row lookup by full dict (not just `source_uri`) so
+  `content_sha256` is available separately from `asset_id`.
+- **Build-time bug found and fixed (not part of the ADRs themselves):** the data-architect's
+  `models/marts/core/dim_client.sql` wrapper model shared its name with `seeds/dim_client.csv`
+  → dbt "two resources, identical database representation" collision. Fixed by deleting the
+  wrapper (1:1 passthrough with zero transform — same bare-seed pattern already used for
+  `dim_platform`) and moving its column tests into `_core.yml`'s `seeds:` key.
+- **Seed fixture rename:** `seeds/dim_client.csv` / `asset_manifest.csv` originally used a
+  fictional `client_id=voltecx`, inconsistent with the `demo_client` default baked into
+  `.env`/`.env.example`/the DAG's `Param`. Renamed to `demo_client` (asset_ids recomputed under
+  the new client_id — the hash formula folds in `client_id`, so this wasn't just a string swap)
+  so a fresh clone's `dbt seed && dbt build` passes with zero edits.
+- **Verified:** `dbt seed` 5/5 PASS; `dbt build -s +marts.core` — `dim_client`/`dim_asset` all
+  tests green (PK, FK to `dim_client`, `asset_type` enum); the one remaining failure
+  (`stg_gemini_raw`: "no files match bronze/demo_client/asset_raw/*.parquet") is the **expected**
+  failure point — no real video has been run through Gemini yet, same failure this repo has had
+  since the Bronze-grain fix, now re-confirmed post-multi-client.
+- **Flagged, not solved:** ADR-007 names the guarded-delete as "a scheduled Airflow task," but
+  Airflow isn't installed in this environment (no `venv_airflow/` yet) and the main DAG's own
+  tasks are still TODO-stubs not wired to the now-real scripts. Did not author a new DAG file
+  for this — couldn't validate it against a real `DagBag` import here, and inventing
+  orchestration code I can't test is worse than naming the gap. `scripts/enforce_landing_ttl.py`
+  is fully real and tested at the CLI/function level; wiring it into Airflow is a clean follow-up
+  once the orchestration venv exists.
+
 ## Next step when resuming (v1 path — build feature store FIRST, serve AFTER it has rows)
-1. Implement stubs per `architecture/SPEC_v1_search.md` — staging (`stg_*`) → `int_chunk_cleaned`
-   → `fact_chunk` + `dim_asset` + bridges. Set `dbt_project.yml` marts `materialized: external`
-   + `location: s3://{{env_var('S3_BUCKET')}}/{silver,gold}/...`; set `s3_region` in profiles.
-2. Implement ingest + Gemini scripts (TODO stubs) writing landing/bronze to S3; BYO embeddings in Gold.
-3. Wire Great Expectations suites incl. the 5th non-triviality gate (finding #2).
-4. v1.5: performance marts + significance post-step + semantic search — DuckDB VSS first ($0),
+1. **Test with a real Drive folder** (the owner's own footage) — set `DRIVE_FOLDER_ID` +
+   `GOOGLE_APPLICATION_CREDENTIALS` in `.env`, run `python scripts/ingest_drive_to_s3.py`, then
+   `python scripts/run_gemini_extract.py <asset_id>` per landed asset, then `dbt build -s +marts.core`.
+   This is the first real end-to-end run — everything above was tested with synthetic fixtures.
+2. Wire Great Expectations suites incl. the 5th non-triviality gate (finding #2, still open).
+3. v1.5: performance marts + significance post-step + semantic search — DuckDB VSS first ($0),
    then Snowflake Cortex veneer once Gold has real rows + teardown plan (ADR-005 sequencing).
+4. Wire the DAG's stub tasks to the now-real scripts (`ingest_drive_to_s3.py`,
+   `run_gemini_extract.py`, `enforce_landing_ttl.py`) once Airflow is actually installed.
 
 ## Standalone status
 Self-contained — see audit in chat 2026-06-22. CLAUDE.md + 8 agents + setup.sh + CI all present;

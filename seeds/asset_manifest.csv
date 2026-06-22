@@ -1,4 +1,4 @@
-asset_id,asset_name,asset_type,parent_asset_id,duration_sec,source_uri
-rawhash001,voltecx_raw_shoot_01.mp4,RAW,,600,s3://creative-intel-lake/landing/video/rawhash001.mp4
-rawhash002,voltecx_raw_shoot_02.mp4,RAW,,540,s3://creative-intel-lake/landing/video/rawhash002.mp4
-edithash101,voltecx_ad_energetic_30s.mp4,EDITED,rawhash001,30,s3://creative-intel-lake/landing/video/edithash101.mp4
+asset_id,client_id,content_sha256,asset_name,asset_type,parent_asset_id,duration_sec,source_uri
+613a6523422c7e3695e3ed6a74e4473f3cc8fef426b3d8a23d1250edc8c24bbd,demo_client,rawhash001,voltecx_raw_shoot_01.mp4,RAW,,600,s3://creative-intel-lake/landing/demo_client/video/613a6523422c7e3695e3ed6a74e4473f3cc8fef426b3d8a23d1250edc8c24bbd.mp4
+fce591ca57b3f9721866fe55713033ef77af66a1937b168806770740a02b3d51,demo_client,rawhash002,voltecx_raw_shoot_02.mp4,RAW,,540,s3://creative-intel-lake/landing/demo_client/video/fce591ca57b3f9721866fe55713033ef77af66a1937b168806770740a02b3d51.mp4
+bd84931713c3d7ceda729e0941558959f820364ad210887bf21b2eb90c322701,demo_client,edithash101,voltecx_ad_energetic_30s.mp4,EDITED,613a6523422c7e3695e3ed6a74e4473f3cc8fef426b3d8a23d1250edc8c24bbd,30,s3://creative-intel-lake/landing/demo_client/video/bd84931713c3d7ceda729e0941558959f820364ad210887bf21b2eb90c322701.mp4

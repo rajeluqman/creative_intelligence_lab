@@ -42,15 +42,23 @@ actually happens at that hop; "verbatim" means explicitly no transform.
 | Transform | Flatten JSON → one row per semantic chunk (`stg_gemini_raw`, grain = `asset_id` + `chunk_sequence`); filler removed, timestamps normalized, `standalone_score` passed through with a GE range gate (`int_chunk_cleaned`) — `architecture/DATA_MODEL.md` §5 |
 | Rule enforced | ADR-003: chunking happens here, not Bronze, not Gold. |
 
+## Target: `dim_client` (Gold)
+
+| Source field | Target column | Transform |
+|--------------|----------------|-----------|
+| `seeds/dim_client.csv` (hand-curated tenancy reference) | `client_id`, `client_name`, `account_support_owner`, `drive_folder_id`, `landing_ttl_days`, `status` | **None — static reference table, SCD0** (same lane as `dim_platform`). Sourced from a **seed**, NOT the ingestion manifest, NOT Gemini (`architecture/ADR-006-multi-client-tenancy.md`). |
+
 ## Target: `dim_asset` (Gold)
 
 | Source field | Bronze/Silver column | Target column | Transform |
 |--------------|----------------------|----------------|-----------|
-| video bytes (Landing) | — | `asset_id` | SHA-256 of video bytes (identity, not from Gemini) |
+| ingestion manifest (`CLIENT_ID` env / `dim_client.client_id`) | — | `client_id` | passthrough from the ingestion manifest; FK → `dim_client` (`architecture/ADR-006-multi-client-tenancy.md`) |
+| video bytes (Landing) | — | `content_sha256` | SHA-256 of video **bytes** (the raw byte fingerprint; **separate non-key** column, drives intra-client `dq_flag`) |
+| derived from `client_id` + `content_sha256` | — | `asset_id` | **`SHA-256(client_id ':' content_sha256)`** — tenant-scoped content identity (ADR-006); deterministic, computed in the ingestion script, not from Gemini |
 | Drive file metadata | — | `asset_name`, `source_uri` | passthrough |
 | (not yet specified — see note) | — | `parent_asset_id` | discovery-lineage edge; **mechanism for populating this is not yet defined in any ratified doc** — flagged here rather than invented |
 | `silver_chunk` (aggregated) | — | `duration_sec` | derived from chunk boundaries / video metadata |
-| near-dup detection | — | `dq_flag` | content-hash collision signal; MEDIUM, no auto-merge (`architecture/DATA_MODEL.md` §4) |
+| near-dup detection | — | `dq_flag` | content-hash collision signal **within a client** (`content_sha256` match); MEDIUM, no auto-merge (`architecture/DATA_MODEL.md` §4) |
 
 ## Target: `fact_chunk` (Gold)
 
@@ -62,6 +70,10 @@ actually happens at that hop; "verbatim" means explicitly no transform.
 | `sentiment` | `sentiment` | `sentiment` | passthrough, enum-gated |
 | `standalone_score` | `standalone_score` | `standalone_score` | passthrough, range-gated 1–5 |
 | — | — | `embedding` | v1.5 addition, BYO Gemini embedding generated in ELT (`architecture/ADR-005-unified-s3-and-snowflake-serving.md`) — **not** a source-field passthrough |
+
+> **`client_id` is deliberately NOT a target column on `fact_chunk`** (ADR-006 / Clean-ERD
+> axis 4). Client scope is reached by join `fact_chunk.asset_id → dim_asset.client_id`; if a
+> serving surface needs it pre-joined, it appears on a VIEW, never as a stored fact column.
 
 ## Target: `bridge_chunk_compatibility` (Gold)
 
@@ -141,6 +153,10 @@ actually happens at that hop; "verbatim" means explicitly no transform.
 - `dim_asset.parent_asset_id` and `bridge_asset_lineage`'s population mechanism is **not
   yet specified** in any ratified doc — flagged here rather than invented. Routes to
   @data-architect when it needs an answer, not resolved by this STTM.
+- Asset **removal / re-curation** (a video leaving a client's curated set) is **OUT for v1**
+  (`architecture/ADR-006-multi-client-tenancy.md` §F); the v1.5 lineage for it
+  (`bridge_client_asset_curation`, SCD2) is named, not mapped here. Landing/Bronze stay
+  append-only — removal never deletes Bronze.
 - Both stale-doc TODOs from `architecture/DQD.md` §3 (5th LLM-output gate, row-count
   reconciliation) affect the Bronze→Silver and EDL→`bridge_ad_chunk` hops mapped above —
   this STTM documents the intended lineage; it does not imply those gates are built.
@@ -150,6 +166,9 @@ actually happens at that hop; "verbatim" means explicitly no transform.
 - 2026-06-22 — initial draft, cabinet doc-gap convene (@data-architect + @scope-guardian
   gate-approved; see `architecture/DATA_DICTIONARY.md` and `architecture/DQD.md` for the
   sibling docs from the same convene).
+- 2026-06-22 — ADR-006/007 build: added `dim_client` target (seed-sourced, SCD0) and the
+  `client_id` / `content_sha256` / tenant-scoped `asset_id` lineage on `dim_asset`; recorded
+  removal/re-curation as a v1-OUT exception.
 
 ---
 
@@ -158,4 +177,5 @@ actually happens at that hop; "verbatim" means explicitly no transform.
 | Agent | Status | Reason | Date |
 |-------|--------|--------|------|
 | @data-architect | ✅ APPROVED (doc-gap convene) | Enforces, does not violate, ADR-003; bridge_ad_chunk kept in its own asserted-fact lane | 2026-06-22 |
+| @data-architect | ✅ APPROVED (ADR-006/007 build) | dim_client seed lane + tenant-scoped asset_id derivation mapped; Bronze-verbatim boundary untouched | 2026-06-22 |
 | @scope-guardian | ✅ APPROVED (doc-gap convene) | Documents existing lineage already implied across DATA_MODEL/SPEC docs; no new model object | 2026-06-22 |

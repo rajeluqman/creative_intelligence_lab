@@ -110,13 +110,13 @@ def _bronze_key(asset_id: str, client_id: str, suffix: str = "asset_raw", ext: s
     return f"bronze/{suffix}/{asset_id}.{ext}"  # matches STACK_AND_FLOW.md when no client_id
 
 
-def _lookup_source_uri(asset_id: str) -> str | None:
+def _lookup_manifest_row(asset_id: str) -> dict | None:
     if not MANIFEST_PATH.exists():
         return None
     with MANIFEST_PATH.open(newline="") as f:
         for row in csv.DictReader(f):
             if row["asset_id"] == asset_id:
-                return row["source_uri"]
+                return row
     return None
 
 
@@ -174,10 +174,11 @@ def extract_chunks(asset_id: str, client_id: str = "") -> str:
     if _s3_exists(s3, bucket, bronze_key):
         return asset_id  # already extracted — no-op, no API spend
 
-    source_uri = _lookup_source_uri(asset_id)
-    if not source_uri:
+    manifest_row = _lookup_manifest_row(asset_id)
+    if not manifest_row:
         raise ValueError(f"asset_id {asset_id!r} not found in {MANIFEST_PATH} — run ingest_drive_to_s3 first")
-    landing_bucket, landing_key = _parse_s3_uri(source_uri)
+    content_sha256 = manifest_row["content_sha256"]  # raw byte hash, distinct from asset_id (ADR-006)
+    landing_bucket, landing_key = _parse_s3_uri(manifest_row["source_uri"])
     ext = Path(landing_key).suffix or ".mp4"
     video_bytes = s3.get_object(Bucket=landing_bucket, Key=landing_key)["Body"].read()
 
@@ -209,7 +210,7 @@ def extract_chunks(asset_id: str, client_id: str = "") -> str:
         "raw_response": response.text,
         "model_version": model_name,
         "prompt_version": prompt_version,
-        "content_sha256": asset_id,
+        "content_sha256": content_sha256,  # raw byte hash from the manifest (ADR-006), not asset_id
         "chunk_count": chunk_count,  # great_expectations/expectations/bronze_asset_raw.json CRITICAL gate
         "load_ts": load_ts,
     }]

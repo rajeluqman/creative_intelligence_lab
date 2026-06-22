@@ -1,9 +1,22 @@
 version: 2
+seeds:
+  # dim_client is sourced straight from the seed, no wrapper model (1:1 passthrough,
+  # bare reference table — same pattern as dim_platform). Tests live here, not under
+  # `models:`, because `ref('dim_client')` resolves to this seed; a same-named model
+  # would collide with it (dbt: "two resources with identical database representations").
+  - name: dim_client
+    columns:
+      - name: client_id
+        tests: [unique, not_null]
 models:
   - name: dim_asset
     columns:
       - name: asset_id
         tests: [unique, not_null]
+      - name: client_id
+        tests:
+          - not_null
+          - relationships: {to: ref('dim_client'), field: client_id}
       - name: asset_type
         tests: [{accepted_values: {values: ['RAW','EDITED']}}]
   - name: fact_chunk

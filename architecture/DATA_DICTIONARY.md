@@ -17,17 +17,34 @@ or `architecture/ERD_consolidated.md` (cardinality/SCD).
 
 ---
 
+## `dim_client` — one row per client account (the tenancy boundary)
+
+Introduced by `architecture/ADR-006-multi-client-tenancy.md`. Every asset belongs to exactly
+one client; this is what lets a search be scoped to a single client's footage and what stops
+two clients' identical stock footage from being treated as the same video.
+
+| Column | Business meaning |
+|--------|-------------------|
+| `client_id` | Short stable code for the client (e.g. `voltecx`). The boundary every search is scoped to. |
+| `client_name` | The client's display name. |
+| `account_support_owner` | Who internally owns this client relationship. |
+| `drive_folder_id` | The client's source Google Drive folder that footage is pulled from. |
+| `landing_ttl_days` | How many days the client's original videos are kept before the aged-out cleanup runs (default 30) — see `architecture/ADR-007-landing-ttl.md`. |
+| `status` | `active`, `paused`, or `offboarded`. |
+
 ## `dim_asset` — one row per creative video (RAW or EDITED)
 
 | Column | Business meaning |
 |--------|-------------------|
-| `asset_id` | Unique ID for the video — a content hash, so two uploads of the exact same file always get the same ID (this is how near-duplicates are caught). |
+| `asset_id` | Unique ID for the video. It is a content hash **scoped to the client**, so the same client re-uploading the same file always gets the same ID (this is how near-duplicates are caught), but two *different* clients uploading identical footage get *different* IDs (no cross-client mix-up). |
+| `client_id` | Which client this video belongs to (links to `dim_client`). |
+| `content_sha256` | The raw fingerprint of the video file's bytes. Used to spot near-duplicates **within one client**; it is not the asset's ID. |
 | `parent_asset_id` | If this video was cut down from a raw source, points to that source. **For finding related footage only — never used to attribute performance.** |
 | `asset_name` | Original filename. |
 | `asset_type` | `RAW` (untouched source footage) or `EDITED` (a finished ad). |
 | `duration_sec` | Length of the video. |
-| `source_uri` | Where the original file lives (for playback) — not the analytical data itself. |
-| `dq_flag` | Flags a likely near-duplicate of another asset. Informational only — assets are never auto-merged. |
+| `source_uri` | Where the original file lives (for playback) — not the analytical data itself. **Note:** the original file may be cleaned up after `landing_ttl_days` (ADR-007); the analytical data survives, but the playable source may not. |
+| `dq_flag` | Flags a likely near-duplicate of another asset (within the same client). Informational only — assets are never auto-merged. |
 
 ## `fact_chunk` — one row per semantic "beat" inside a video
 
@@ -36,7 +53,7 @@ This is the core inventory marketers search against.
 | Column | Business meaning |
 |--------|-------------------|
 | `chunk_id` | Unique ID for this beat. |
-| `asset_id` | Which video this beat came from. |
+| `asset_id` | Which video this beat came from. (The client is reached *through* this — `asset_id → dim_asset.client_id`; there is deliberately no `client_id` stored on this table.) |
 | `chunk_sequence` | Its order within that video. |
 | `start_sec` / `end_sec` | Where in the video this beat starts/ends (for playback seek). |
 | `transcript_segment` | The cleaned dialogue/voiceover for this beat. |
@@ -135,4 +152,5 @@ from this mart.
 | Agent | Status | Reason | Date |
 |-------|--------|--------|------|
 | @data-architect | ✅ APPROVED (doc-gap convene) | Distinct audience/purpose from DATA_MODEL §4 / ERD; precedence rule + view-not-column labelling applied | 2026-06-22 |
+| @data-architect | ✅ APPROVED (ADR-006/007 build) | dim_client + dim_asset.client_id/content_sha256 documented; client-scoped-identity + TTL playback caveat added | 2026-06-22 |
 | @scope-guardian | ✅ APPROVED (doc-gap convene) | Describes existing columns only; any column gap found during drafting routes back through @data-architect, not absorbed here | 2026-06-22 |

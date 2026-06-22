@@ -1,20 +1,20 @@
-"""Drive -> S3 landing. Content-hash (SHA-256) naming, skip-existing (idempotent).
+"""Drive -> S3 landing. Tenant-scoped content-hash naming, skip-existing (idempotent).
 
 Path A of the pipeline (architecture/STACK_AND_FLOW.md §2). Pulls every video file out of
-a client's Google Drive folder, identifies it by the SHA-256 of its bytes (never a random
-key — DATA_MODEL.md §4, the near-duplicate answer), and lands it write-once in S3. A
-re-delivered or near-duplicate video hashes to the same asset_id and is never re-uploaded —
-the first cost firewall (architecture/DRD.md §5.1).
+a client's Google Drive folder and lands it write-once in S3, identified by a **tenant-scoped**
+content hash: `asset_id = SHA-256(client_id ':' content_sha256)` where `content_sha256` is the
+raw SHA-256 of the video bytes (ADR-006). A re-delivered/near-duplicate video FROM THE SAME
+CLIENT hashes to the same asset_id and is never re-uploaded — the first cost firewall
+(architecture/DRD.md §5.1). Two DIFFERENT clients delivering byte-identical footage now get
+DIFFERENT asset_ids (no cross-tenant collision — ADR-006).
 
 Auth: a Google service account, with the client's Drive folder shared to its client_email.
 Set GOOGLE_APPLICATION_CREDENTIALS to the service-account JSON path (see .env.example).
 
-⚠️ Path inconsistency (flag, not silently resolved): dags/creative_intel_pipeline.py's
-`client_id` Param says "client partition under landing/" (landing/<client_id>/video/...),
-but architecture/STACK_AND_FLOW.md §2 and DATA_MODEL.md §3 both state `landing/video/...`
-with no client partition. This script follows the DAG's contract (client_id-partitioned)
-since that's the more specific, recently-written spec, but defaults to the no-partition form
-when client_id is blank. Route to @data-architect to reconcile the docs either way.
+Path convention (RESOLVED by ADR-006, was a flagged inconsistency): landing is
+**client-partitioned** — `landing/<client_id>/video/<asset_id>.<ext>` (and Bronze likewise,
+`bronze/<client_id>/asset_raw/<asset_id>.parquet`). `client_id` is REQUIRED for tenant runs;
+the no-partition fallback in `_s3_key` is retained only for non-tenant/dev smoke use.
 
 ⚠️ Open architectural item (NOT resolved here — see architecture/STTM.md "Exceptions"):
 there is no ratified mechanism for detecting asset_type (RAW vs EDITED) or populating
@@ -42,7 +42,8 @@ from env_guard import assert_safe  # noqa: E402
 
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 MANIFEST_PATH = Path(__file__).parent.parent / "seeds" / "asset_manifest.csv"
-MANIFEST_COLUMNS = ["asset_id", "asset_name", "asset_type", "parent_asset_id", "duration_sec", "source_uri"]
+MANIFEST_COLUMNS = ["asset_id", "client_id", "content_sha256", "asset_name", "asset_type",
+                    "parent_asset_id", "duration_sec", "source_uri"]
 
 
 def _drive_client():
@@ -147,6 +148,12 @@ def sync_drive_to_landing(folder_id: str, client_id: str = "", s3_bucket: str | 
     bucket = s3_bucket or os.environ["S3_BUCKET"]
     if not folder_id:
         return 0  # "blank = re-scan existing" (DAG Param) — nothing to pull from Drive
+    if not client_id:
+        raise ValueError(
+            "client_id is required (ADR-006 tenant-scoped identity). Set CLIENT_ID and ensure a "
+            "matching row exists in seeds/dim_client.csv — dim_asset.client_id has a relationships "
+            "test against dim_client."
+        )
 
     drive = _drive_client()
     s3 = boto3.client("s3")
@@ -155,7 +162,8 @@ def sync_drive_to_landing(folder_id: str, client_id: str = "", s3_bucket: str | 
 
     for file_meta in tqdm(_list_videos(drive, folder_id), desc="Drive -> S3 landing"):
         raw_bytes = _download_bytes(drive, file_meta["id"])
-        asset_id = hashlib.sha256(raw_bytes).hexdigest()
+        content_sha256 = hashlib.sha256(raw_bytes).hexdigest()                      # raw byte hash
+        asset_id = hashlib.sha256(f"{client_id}:{content_sha256}".encode()).hexdigest()  # tenant-scoped (ADR-006)
         ext = _extension(file_meta["name"])
         key = _s3_key(asset_id, ext, client_id)
         source_uri = f"s3://{bucket}/{key}"
@@ -163,11 +171,15 @@ def sync_drive_to_landing(folder_id: str, client_id: str = "", s3_bucket: str | 
         if not _s3_exists(s3, bucket, key):
             s3.put_object(Bucket=bucket, Key=key, Body=raw_bytes)
 
+        # Skip-existing is client-scoped transitively: asset_id folds in client_id, so the
+        # same bytes from a different client produce a different asset_id and don't collide.
         if asset_id not in known_ids:
             duration_ms = (file_meta.get("videoMediaMetadata") or {}).get("durationMillis")
             _append_manifest_row(
                 {
                     "asset_id": asset_id,
+                    "client_id": client_id,
+                    "content_sha256": content_sha256,
                     "asset_name": file_meta["name"],
                     "asset_type": _infer_asset_type(drive, file_meta),
                     "parent_asset_id": "",  # never inferred — see module docstring
