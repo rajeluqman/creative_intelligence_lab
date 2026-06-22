@@ -36,12 +36,35 @@ transform engine or source of truth. Still rejected: Spark / Databricks / Glue /
 
 ## Architecture of Record
 `architecture/` — DATA_MODEL.md (+ v1.5), ERD_consolidated.md / erd.dbml, STACK_AND_FLOW.md,
-DBT_DAG.md, SPEC_v1_search.md, SPEC_v1.5_performance_marts.md, and:
+DBT_DAG.md, SPEC_v1_search.md, SPEC_v1.5_performance_marts.md; the doc-gap set added by the
+2026-06-22 convene — BRD.md, DRD.md, DATA_DICTIONARY.md, DQD.md, STTM.md (all @data-architect +
+@scope-guardian gate-approved as documentation-debt closure, not scope creep); and:
 - ADR-001 — DuckDB over Spark (amended on storage/serving axis by ADR-005)
 - ADR-002 — graph over star
 - ADR-003 — chunking in Silver
 - ADR-004 — performance-veto converted
 - ADR-005 — unified S3 storage + Snowflake Cortex serving veneer (owner override, no MinIO)
+
+**Governance gate:** @data-architect holds ULTIMATE VETO and enforces the **Clean-ERD
+Doctrine** on every model change — 1 table = 1 grain = 1 business entity · no mixed-domain
+dimensions · bridge tables (not CTEs) for N:N · serving = view, never a duplicated physical
+table · one isolated SCD strategy per table · what's deliberately OUT stays named in ERD §6.
+No Gold/marts work proceeds without architecture sign-off. Full doctrine + veto format:
+`.claude/agents/data-architect.md`.
+
+## Repo map (beyond architecture/)
+- `BACKLOG.md` — v2-deferred items + the gym-apparatus-port ruling (cheatsheets/learning kept
+  as templates, gym agents/incubator rejected — see `AGENT_ROSTER_RECOMMENDATION.md`)
+- `debate/` — original cabinet convene record: `00_AGENDA.md` (contested questions) +
+  `DEBATE_LOG.md` / `ROUND_02_PERFORMANCE_DEBATE.md` (rulings). Historical, not a build target.
+- `great_expectations/` — suite README + per-layer expectation JSON (`expectations/`)
+- `cheatsheets/{troubleshooting,optimization}/00_INDEX.md` — card-format libraries, English,
+  DuckDB-native; templates only until v1 ships AND ≥1 real incident lands (BACKLOG-gated)
+- `learning/CURRICULUM.md` — @cikgu's M0–M11 teaching path; `LEARNING_LOG.md` is the
+  score/progress log (run @cikgu as a main session, not a subagent, for actual teaching)
+- `analyses/demo_queries.sql` — ad-hoc dbt analyses (not models, not built/tested by `dbt build`)
+- `.github/workflows/ci.yml` — static-gates-only CI ($0, no cloud, no secrets): ruff lint,
+  py_compile, `dbt deps && dbt parse`, `dbt seed`, GE JSON validity, no-`.env`-committed guard
 
 ## The hard problems (the design drivers)
 - **Identity**: near-duplicate videos → content hash, not random key.
@@ -77,5 +100,10 @@ See `README_BUILD.md`. Short version:
 4. Update the checkpoint before ending a turn.
 
 ## What NOT To Commit
-CLAUDE.md, PROJECT_STATUS.md, COST_LOG.md, DEBUG_CHECKPOINT.md, LEARNING_LOG.md,
-SIGN_OFF_LOG.md, .env*, data/, *.parquet, *.csv (except seeds/), raw video.
+`.env*`, `data/`, `*.parquet`, `*.csv` (except `seeds/`), raw video, `COST_LOG.md`,
+`DEBUG_CHECKPOINT.md`, `SIGN_OFF_LOG.md` (ephemeral working logs, created during build —
+not yet present; add to `.gitignore` when they first appear).
+
+**Intentionally committed** (unlike the parent gym pattern this project borrowed agents
+from): `CLAUDE.md`, `PROJECT_STATUS.md`, `learning/LEARNING_LOG.md` — this is a standalone,
+self-contained repo by design; see `PROJECT_STATUS.md` "Standalone status".

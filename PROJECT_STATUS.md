@@ -15,6 +15,25 @@ and the proposed gym-apparatus port. Outcomes:
 - **Conformance/bridge principle:** present & clean (the model's spine) — full Clean-ERD Doctrine pass.
 - **Gym port:** deferred/rejected → see `BACKLOG.md`. Pivot to v1.
 
+## Doc-gap convene — 2026-06-22 (5 docs added, +1 stale-doc fix)
+Compared this repo's doc set against two sibling portfolio repos (olist-ecommerce-pipeline,
+pharma_novartis_sttm) on the same "DE Cabinet Gym" 7-doc framework. @data-architect (Clean-ERD
+gate) + @scope-guardian (scope gate) **both approved all 5 additions, no veto** — ruled
+documentation-debt closure, not scope creep (no new model objects, no new pipeline behavior).
+- **Added:** `architecture/{BRD,DRD,DATA_DICTIONARY,DQD,STTM}.md`. BRD/DQD carry PENDING
+  owner-review rows (@product-owner / @data-quality-steward drafted-by-convene, not yet
+  directly reviewed). STTM was flagged the most genuinely-missing artifact.
+- **Required fix done first:** `DATA_MODEL.md` §4/§6 still called `fact_ad_performance` VETOED
+  (stale vs ADR-004's conversion + ERD/v1.5 carrying it as built). Reconciled — §6 now scopes
+  the *permanent* veto to backward-propagation onto RAW via `parent_asset_id` only; the fact
+  itself is a v1.5 object. ERD_consolidated.md (10-table inventory) is authoritative.
+- **Deliberately NOT added** (confirmed by @scope-guardian, not re-litigated): OPS_RUNBOOK,
+  INTERVIEW_GUIDE, RUNBOOK_cloud_migration (all Phase-5/post-ship or post-execution — Gold still
+  stubs); AH.md + erwin/ERD.md (duplicate STACK_AND_FLOW + ERD_consolidated); INCUBATOR/SLA/
+  incidents gym apparatus (already REJECTED in BACKLOG.md); PLAYBOOK_REFERENCE (standalone repo).
+- **New open items surfaced by STTM:** `dim_asset.parent_asset_id` / `bridge_asset_lineage`
+  population mechanism is unspecified in any ratified doc — routes to @data-architect when needed.
+
 ## Real findings from the convene (fix during v1)
 1. ✅ **DONE — `bridge_ad_chunk` CRITICAL uniqueness test** added to `_performance.yml`
    (`unique_combination_of_columns [ad_id, chunk_id, position_in_ad]` + not_nulls + position range).

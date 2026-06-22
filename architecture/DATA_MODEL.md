@@ -102,8 +102,9 @@ the warehouse ever storing frames.
 One row per chunk per keyword/theme — arrays exploded for queryability (no `ARRAY` columns
 survive into Gold).
 
-> **`fact_ad_performance` is NOT in v1.** VETOED (§6). If perf ever lands it attaches to the
-> EDITED asset that actually ran, behind a provenance/confidence qualifier — v2 backlog.
+> **`fact_ad_performance` is NOT in v1** — it is a **v1.5 object** (ADR-004 converted the
+> round-1 veto, see §6). Grain: 1 edited ad × 1 platform × 1 day; attaches to the EDITED
+> asset that actually ran. Full schema: `DATA_MODEL_v1.5_PERFORMANCE.md` + `ERD_consolidated.md`.
 
 ## 5. dbt materialization path
 
@@ -123,11 +124,14 @@ Tests: `unique`+`not_null` on `chunk_id`; `unique` on (`asset_id`,`chunk_sequenc
 
 ## 6. Vetoes embedded in the model
 
-1. **`fact_ad_performance` + proxy-performance attribution → VETOED.** Raw clip A did not
-   convert; edited clip B (possibly 10% A's footage + 9 other sources) did. Attributing B's
-   conversions back to A manufactures causality. `parent_asset_id` is retained as a
-   **navigation** relationship only. *Principle: a model must not encode an inference as if
-   it were a fact — provenance before propagation.*
+1. **Backward performance-propagation onto RAW via `parent_asset_id` → PERMANENTLY VETOED.**
+   Raw clip A did not convert; edited clip B (possibly 10% A's footage + 9 other sources)
+   did. Attributing B's conversions back to A manufactures causality. `parent_asset_id` is
+   retained as a **navigation** relationship only. *Principle: a model must not encode an
+   inference as if it were a fact — provenance before propagation.* — **Note:**
+   `fact_ad_performance` itself is **not** vetoed: ADR-004 converted (not reversed) the
+   round-1 veto into a v1.5 object attached to the EDITED ad that actually ran, never
+   propagated backward. See `DATA_MODEL_v1.5_PERFORMANCE.md`.
 2. **Flat Gold table → REJECTED.** A flat table discards `bridge_chunk_compatibility` — the
    entire anti-Frankenstein value and the literal mechanism of the north-star query.
    **Graph-from-start**, even on 5–10 videos (the graph is trivially small; the demo is

@@ -21,6 +21,16 @@ touches the Gemini ingestion/extraction boundary must route through a frozen Bro
 a fail-closed `GEMINI_STUB_MODE` replay flag (exact-match convention) — never live API in a
 loop. Downstream (Silver/Gold/GE/orchestration) drills are cost-safe.
 
+**Tier-1 stub ownership ruling (co-sign 2026-06-22, @senior-data-engineer + @scope-guardian):**
+Tier-1 stays **index-only** — the two existing `cheatsheets/{troubleshooting,optimization}/00_INDEX.md`
+files ARE the single-doc stub. Decision: do **not** scaffold the ~16 empty per-phase/per-layer
+card files (premature sprawl vs the "shrink to a single doc" line above). A real card is authored
+inline in the index when the gate trips (v1 ships AND a real incident/perf-finding lands, with a
+real `file:line`); a phase/layer is split into its own `0N_*.md` file only at **≥3–4 real cards**
+(lazy split on volume, not taxonomy). The co-sign is a single event covering all future cards —
+no per-card review ritual. The pharma `INCUBATOR.md` drill-loop reference in the troubleshooting
+index is now explicitly relabelled **REJECTED** (was "optional"), per Tier 2/3 above.
+
 ## Other v2 items (from CLAUDE.md "v1 Scope OUT")
 - AI creative search engine (app on top of the feature store)
 - RAG script/brief generator
