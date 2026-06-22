@@ -1,4 +1,6 @@
 .env
+secrets/
+!secrets/.gitkeep
 venv/
 venv_airflow/
 .venv/

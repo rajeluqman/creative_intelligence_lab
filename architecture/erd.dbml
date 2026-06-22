@@ -12,15 +12,28 @@ Project creative_intelligence {
 
 // ───────────────────────────── v1: GRAPH + FEATURE STORE ────────────────────
 
+Table dim_client {
+  client_id            varchar [pk, note: 'short stable slug, e.g. voltecx — S3 partition token (ADR-006)']
+  client_name          varchar
+  account_support_owner varchar
+  drive_folder_id      varchar [note: 'client source Google Drive folder']
+  landing_ttl_days     integer [note: 'per-client landing retention — feeds ADR-007 guarded delete']
+  status               varchar [note: 'active | paused | offboarded']
+  Note: 'One row per client account. SCD0 reference (seed-sourced), ADR-006.'
+}
+
 Table dim_asset {
-  asset_id        varchar [pk, note: 'SHA-256 of video bytes']
+  asset_id        varchar [pk, note: 'SHA-256(client_id ":" content_sha256) — tenant-scoped (ADR-006)']
+  client_id       varchar [ref: > dim_client.client_id, note: 'tenancy boundary, NOT NULL (ADR-006)']
+  content_sha256  varchar [note: 'raw video-byte hash; non-key, intra-client near-dup signal']
   parent_asset_id varchar [ref: > dim_asset.asset_id, note: 'RAW->EDITED, DISCOVERY ONLY (no metrics)']
   asset_name      varchar
   asset_type      varchar [note: 'RAW | EDITED']
   duration_sec    integer
-  source_uri      varchar [note: 'pointer to landing/video/<asset_id>.<ext>']
+  source_uri      varchar [note: 'pointer to landing/<client_id>/video/<asset_id>.<ext>']
   dq_flag         varchar [note: 'e.g. likely_near_dup (no auto-merge)']
-  load_ts         timestamp
+  ingested_at     timestamp [note: 'provenance — when bytes landed in S3, immutable (write-once)']
+  load_ts         timestamp [note: 'audit — when this row was last rebuilt by dbt, volatile']
   Note: 'One node per video asset (raw or edited).'
 }
 

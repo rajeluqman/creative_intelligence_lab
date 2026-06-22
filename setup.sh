@@ -27,7 +27,9 @@ wf requirements.txt <<'EOF'
 dbt-duckdb>=1.8
 duckdb>=1.1
 great-expectations>=0.18
-google-generativeai>=0.8
+google-genai>=2.0                # current SDK (google-generativeai is fully EOL — see run_gemini_extract.py)
+google-api-python-client>=2.100   # Drive API v3 (ingest_drive_to_s3.py) — direct dep, not transitive
+google-auth>=2.23                # service-account credentials for headless Drive auth
 pandas>=2.0
 scipy>=1.11
 boto3>=1.34
@@ -54,16 +56,30 @@ EOF
 
 wf .env.example <<'EOF'
 # Copy to .env and fill. NEVER commit .env.
+# Google Drive (client source folder) — service-account auth for headless ingestion.
+# Share the client's Drive folder with the service account's client_email, then fill below.
+GOOGLE_APPLICATION_CREDENTIALS=        # path to service-account JSON, NOT the JSON itself
+DRIVE_FOLDER_ID=                       # the client's shared Drive folder id
+CLIENT_ID=                             # THIS run's client slug — set to YOUR client, must match a row in seeds/dim_client.csv (no silent default; unset = dbt/script error)
+# Storage = unified S3 (ADR-005, no MinIO). Real AWS for all layers.
 S3_BUCKET=creative-intel-lake
+S3_STAGING_BUCKET=creative-intel-staging   # throwaway: drills / overwrite work, never canonical
 AWS_ACCESS_KEY_ID=
 AWS_SECRET_ACCESS_KEY=
 AWS_REGION=ap-southeast-1
-# Optional MinIO endpoint for local dev (leave blank for real S3)
-S3_ENDPOINT=
 # Gemini
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.5-flash
 PROMPT_VERSION=v1
+# Serving (ADR-005): Snowflake Cortex veneer over Gold S3. DuckDB VSS = $0 fallback.
+# Provision ONLY after v1 Gold has real rows + teardown plan (FinOps). Leave blank to use fallback.
+SNOWFLAKE_ACCOUNT=
+SNOWFLAKE_USER=
+SNOWFLAKE_PASSWORD=
+SNOWFLAKE_WAREHOUSE=
+SNOWFLAKE_DATABASE=
+SNOWFLAKE_ROLE=
+SERVING_BACKEND=duckdb_vss   # duckdb_vss (default, $0) | snowflake_cortex
 EOF
 
 wf dbt_project.yml <<'EOF'

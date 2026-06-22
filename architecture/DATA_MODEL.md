@@ -101,7 +101,8 @@ hand-curated via seed). One domain = one dimension — client attributes never o
 | `duration_sec` | INT | |
 | `source_uri` | VARCHAR | pointer to `landing/<client_id>/video/...` |
 | `dq_flag` | VARCHAR | e.g. `likely_near_dup` (MEDIUM signal, no auto-merge) — derived from `content_sha256` collisions **within a client** |
-| `load_ts` | TIMESTAMP | |
+| `ingested_at` | TIMESTAMP | **provenance** — when the bytes landed in S3 from Drive; immutable, write-once at landing, never recomputed on re-parse (ADR-006 impl, @data-architect 2026-06-22) |
+| `load_ts` | TIMESTAMP | **audit** — when this dimension row was last (re)built by dbt; volatile, distinct from `ingested_at` |
 
 > **Identity (ADR-006):** `asset_id = SHA-256(client_id || ':' || content_sha256)`. Still
 > deterministic and content-addressed (same client + same bytes → same id), so the Bronze

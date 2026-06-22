@@ -11,6 +11,7 @@ select
     asset_type,               -- RAW | EDITED
     duration_sec,
     source_uri,
+    ingested_at,              -- when the bytes actually landed in S3 (provenance, immutable; @data-architect 2026-06-22)
     cast(null as varchar) as dq_flag,
-    current_timestamp     as load_ts
+    current_timestamp     as load_ts  -- when this row was last (re)built (audit, volatile) — NOT the same event as ingested_at
 from {{ ref('asset_manifest') }}

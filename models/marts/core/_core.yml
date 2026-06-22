@@ -19,6 +19,8 @@ models:
           - relationships: {to: ref('dim_client'), field: client_id}
       - name: asset_type
         tests: [{accepted_values: {values: ['RAW','EDITED']}}]
+      - name: ingested_at
+        tests: [not_null]
   - name: fact_chunk
     columns:
       - name: chunk_id

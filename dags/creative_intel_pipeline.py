@@ -44,7 +44,9 @@ GEMINI_POOL = "gemini_api"  # create in Airflow: `airflow pools set gemini_api <
     catchup=False,
     params={
         # The two "new data" entry points: ad-hoc video (existing client) + new-client onboard.
-        "client_id": Param("demo_client", type="string", description="client partition under landing/"),
+        # No real-client default: must be supplied per run via --conf (multi-client misroute
+        # guard). Empty → sync_drive_to_landing raises ValueError before any S3 write.
+        "client_id": Param("", type="string", minLength=1, description="client partition under landing/ (REQUIRED, must match seeds/dim_client.csv)"),
         "drive_folder_id": Param(
             "", type="string", description="Google Drive folder id to sync (blank = re-scan existing)"
         ),

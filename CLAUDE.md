@@ -2,6 +2,29 @@
 
 > Auto-loaded by Claude Code every session. Standalone project (no parent gym dependency).
 
+## 🛑 STOP-GATE — read before ANY data/model/lineage work
+This project is governed. Before you edit a model, seed, schema, storage path, or ingest
+script — or before you "proceed" past a lineage/identity question — you MUST:
+1. **Open the ADR/spec that governs it first.** Lineage & identity → ADR-006 +
+   `architecture/LINEAGE_CONTRACT.md`. Grain/graph/star → ADR-002 + DATA_MODEL.md.
+   Stack boundary (rejected tech) → ADR-001/004/005 + `architecture/BOUNDARY_CONTRACT.md`.
+   Scope → CLAUDE.md "v1 Scope (LOCKED)" + `architecture/BOUNDARY_CONTRACT.md` + @scope-guardian.
+2. **Validate lineage & fidelity BEFORE building downstream.** Every asset must trace to a
+   **real registered client** (`dim_client.csv`) and a content hash, with a storage path
+   that proves it: `s3://<bucket>/landing/<client_id>/video/<asset_id>.<ext>` where
+   `asset_id == sha256("{client_id}:{content_sha256}")` (ADR-006). Run
+   `python tests/lineage_contract.py` and `python tests/boundary_contract.py` — these are the
+   binding checks, not your judgement.
+3. **If a rule and the request conflict, STOP and surface it** — do not silently proceed.
+   Mixed-domain dimension, placeholder client_id, path/column drift, banned tech
+   (Spark/Databricks/MinIO/vector-DB/RAG/dashboard), scope creep → name it, cite the doc, and
+   ask @data-architect / @scope-guardian before writing code.
+
+This gate is enforced three ways so it cannot be skipped: this prompt (soft), the
+`.claude/hooks/governance_guard.py` pre/post-edit hook (blocks edits to governed files), and
+CI `tests/lineage_contract.py` + `tests/boundary_contract.py` (blocks the PR). Governance is
+code, not vigilance.
+
 ## Project Overview
 **Domain**: Advertising / creative-ops intelligence
 **Problem**: Turn messy raw ad video (a client's Google Drive folder of near-duplicate

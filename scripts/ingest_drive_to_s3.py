@@ -16,11 +16,18 @@ Path convention (RESOLVED by ADR-006, was a flagged inconsistency): landing is
 `bronze/<client_id>/asset_raw/<asset_id>.parquet`). `client_id` is REQUIRED for tenant runs;
 the no-partition fallback in `_s3_key` is retained only for non-tenant/dev smoke use.
 
-⚠️ Open architectural item (NOT resolved here — see architecture/STTM.md "Exceptions"):
-there is no ratified mechanism for detecting asset_type (RAW vs EDITED) or populating
-parent_asset_id from Drive alone. This script uses a pragmatic v1 convention (folder-name
-sniff for asset_type; parent_asset_id always left blank) — see _infer_asset_type() below.
-Do not treat this convention as settled; it is a placeholder pending a real ruling.
+Drive folder convention (client onboarding): the client organizes their source folder into
+category subfolders — e.g. `raw_video/`, `edited_video/`, `winning_video/`. _list_videos()
+walks the whole tree recursively, and _infer_asset_type() classifies by the immediate parent
+folder name. "winning" collapses into EDITED, NOT a third asset_type — a winning ad is
+physically a finished/edited cut; "which one won" is a performance signal, a different domain
+with no ratified v1 home (@data-architect ruling 2026-06-22; Clean-ERD axis-2; CLAUDE.md keeps
+ad-performance OUT of v1). The asset_type *enum* (RAW|EDITED) is thus settled.
+
+⚠️ Still open (NOT resolved here — see architecture/STTM.md "Exceptions"): populating
+parent_asset_id (RAW→EDITED discovery lineage) from Drive alone has no ratified mechanism —
+it is always left blank here. The folder-name sniff for asset_type is a pragmatic v1
+convention, not a ratified detection mechanism; only the enum it maps onto is settled.
 """
 from __future__ import annotations
 
@@ -29,6 +36,7 @@ import hashlib
 import io
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import boto3
@@ -43,7 +51,7 @@ from env_guard import assert_safe  # noqa: E402
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 MANIFEST_PATH = Path(__file__).parent.parent / "seeds" / "asset_manifest.csv"
 MANIFEST_COLUMNS = ["asset_id", "client_id", "content_sha256", "asset_name", "asset_type",
-                    "parent_asset_id", "duration_sec", "source_uri"]
+                    "parent_asset_id", "duration_sec", "source_uri", "ingested_at"]
 
 
 def _drive_client():
@@ -52,8 +60,28 @@ def _drive_client():
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
-def _list_videos(drive, folder_id: str) -> list[dict]:
-    """Non-recursive listing of video files directly under folder_id. Paginated."""
+def _list_subfolders(drive, folder_id: str) -> list[dict]:
+    """Immediate child folders of folder_id. Paginated."""
+    folders, page_token = [], None
+    while True:
+        resp = (
+            drive.files()
+            .list(
+                q=f"'{folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+                fields="nextPageToken, files(id, name)",
+                pageToken=page_token,
+                pageSize=100,
+            )
+            .execute()
+        )
+        folders.extend(resp.get("files", []))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            return folders
+
+
+def _list_videos_in_folder(drive, folder_id: str) -> list[dict]:
+    """Video files directly under folder_id (this folder only). Paginated."""
     files, page_token = [], None
     while True:
         resp = (
@@ -72,11 +100,27 @@ def _list_videos(drive, folder_id: str) -> list[dict]:
             return files
 
 
+def _list_videos(drive, folder_id: str) -> list[dict]:
+    """Video files under folder_id, recursing into subfolders — e.g. the client
+    onboarding convention of edited_video/winning_video/raw_video category
+    subfolders (see _infer_asset_type, which classifies by immediate parent
+    folder name). Drive folders can nest arbitrarily; this walks the whole tree."""
+    videos = list(_list_videos_in_folder(drive, folder_id))
+    for sub in _list_subfolders(drive, folder_id):
+        videos.extend(_list_videos(drive, sub["id"]))
+    return videos
+
+
 def _infer_asset_type(drive, file_meta: dict) -> str:
     """Pragmatic v1 convention — NOT a ratified rule (see module docstring).
 
-    A file is EDITED if its immediate parent Drive folder name contains "edited" or
-    "winners" (case-insensitive); otherwise RAW. parent_asset_id is never inferred here.
+    A file is EDITED if its immediate parent Drive folder name contains "edited",
+    "winning", or "winners" (case-insensitive); otherwise RAW. parent_asset_id is
+    never inferred here. "Winning" folders collapse into EDITED, not a third type —
+    a winning ad IS, physically, a finished/edited cut; "which one won" is a
+    performance signal, a different domain from production-status, and v1 has no
+    ratified home for performance data (@data-architect ruling, 2026-06-22 —
+    Clean-ERD axis-2 domain purity; CLAUDE.md keeps ad-performance ingestion OUT of v1).
     """
     parent_ids = file_meta.get("parents") or []
     for parent_id in parent_ids:
@@ -85,7 +129,7 @@ def _infer_asset_type(drive, file_meta: dict) -> str:
         except Exception:
             continue
         name = parent.get("name", "").lower()
-        if "edited" in name or "winners" in name:
+        if "edited" in name or "winning" in name or "winners" in name:
             return "EDITED"
     return "RAW"
 
@@ -159,6 +203,7 @@ def sync_drive_to_landing(folder_id: str, client_id: str = "", s3_bucket: str | 
     s3 = boto3.client("s3")
     known_ids = _existing_manifest_ids()
     landed = 0
+    ingested_at = datetime.now(timezone.utc).isoformat()  # one run = one ingestion event (@data-architect ruling)
 
     for file_meta in tqdm(_list_videos(drive, folder_id), desc="Drive -> S3 landing"):
         raw_bytes = _download_bytes(drive, file_meta["id"])
@@ -185,6 +230,7 @@ def sync_drive_to_landing(folder_id: str, client_id: str = "", s3_bucket: str | 
                     "parent_asset_id": "",  # never inferred — see module docstring
                     "duration_sec": int(duration_ms) // 1000 if duration_ms else "",
                     "source_uri": source_uri,
+                    "ingested_at": ingested_at,
                 }
             )
             known_ids.add(asset_id)

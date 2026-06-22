@@ -24,16 +24,19 @@ jobs:
           pip install ruff dbt-duckdb
 
       - name: Lint (ruff)
-        run: ruff check scripts/
+        run: ruff check scripts/ tests/ .claude/hooks/
 
       - name: Compile Python
         run: |
           shopt -s nullglob
-          for f in scripts/*.py; do python -m py_compile "$f"; done
+          for f in scripts/*.py tests/*.py .claude/hooks/*.py; do python -m py_compile "$f"; done
 
       - name: dbt deps + parse (graph integrity)
         env:
           DBT_PROFILES_DIR: ${{ github.workspace }}
+          # CLIENT_ID has NO default in _sources.yml (fail-loud multi-client guard) — parse
+          # renders env_var('CLIENT_ID') so CI must set it. Any valid seeded slug works.
+          CLIENT_ID: voltecx
         run: |
           cp profiles.yml.example profiles.yml
           dbt deps
@@ -42,7 +45,14 @@ jobs:
       - name: dbt seed (seeds load + types)
         env:
           DBT_PROFILES_DIR: ${{ github.workspace }}
+          CLIENT_ID: voltecx
         run: dbt seed
+
+      - name: Lineage contract (ADR-006 — manifest fidelity)
+        run: python tests/lineage_contract.py
+
+      - name: Boundary contract (ADR-001/004/005 + v1 scope)
+        run: python tests/boundary_contract.py
 
       - name: Validate Great Expectations JSON (if any)
         run: |
