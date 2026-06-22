@@ -3,5 +3,20 @@ sources:
   - name: bronze
     schema: bronze
     tables:
-      - name: bronze_asset_raw           # verbatim Gemini JSON (immutable, ADR-003)
-      - name: bronze_ad_performance_raw  # verbatim Meta/TikTok CSV (immutable, v1.5)
+      # Verbatim Gemini JSON (immutable, ADR-003). One parquet file per asset_id, written by
+      # scripts/run_gemini_extract.py to s3://$S3_BUCKET/bronze/<client_id>/asset_raw/<asset_id>.parquet.
+      # Glob across all asset files for the active client partition (CLIENT_ID — same env var
+      # the DAG Param + scripts/*.py use, default "demo_client" per .env.example). NOTE: this
+      # resolves ONE client per dbt invocation, matching the DAG's single-client-per-run Param
+      # contract (dags/creative_intel_pipeline.py). Multi-client cross-partition reads (glob
+      # across all client_ids in one dbt run) are NOT this fix — that's a @data-architect call
+      # if/when multi-tenant backfill across clients in a single build is actually needed.
+      - name: bronze_asset_raw
+        meta:
+          external_location: "s3://{{ env_var('S3_BUCKET') }}/bronze/{{ env_var('CLIENT_ID', 'demo_client') }}/asset_raw/*.parquet"
+      # Verbatim Meta/TikTok CSV (immutable, v1.5). No writer script exists yet (flagged in
+      # run_gemini_extract.py's own header) — path follows the same bronze/<client_id>/<table>/
+      # convention so it's ready the moment a landing script for perf CSVs is built.
+      - name: bronze_ad_performance_raw
+        meta:
+          external_location: "s3://{{ env_var('S3_BUCKET') }}/bronze/{{ env_var('CLIENT_ID', 'demo_client') }}/ad_performance_raw/*.parquet"

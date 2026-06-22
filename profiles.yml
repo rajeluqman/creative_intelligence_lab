@@ -4,6 +4,11 @@ creative_intelligence:
   outputs:
     dev:
       type: duckdb
-      path: "target/dev.duckdb"     # ephemeral local catalog
-      extensions: [httpfs, parquet]
-      # settings: {s3_region: "ap-southeast-1"}   # add for real S3 reads
+      path: "target/dev.duckdb"     # ephemeral local catalog (ADR-005: catalog is compute-only)
+      extensions: [httpfs, parquet, json]   # json: stg_gemini_raw.sql unnests the verbatim Bronze envelope
+      # S3 read/write for Bronze/Silver/Gold (ADR-005, no MinIO). Credentials resolve via the
+      # default AWS credential chain (env vars / ~/.aws / instance role) — same chain the
+      # `CREATE SECRET (TYPE S3, PROVIDER CREDENTIAL_CHAIN, ...)` pattern in scripts/*.py uses.
+      # Region MUST match the bucket's real region (AWS_REGION in .env) or httpfs reads 403/404.
+      settings:
+        s3_region: "{{ env_var('AWS_REGION', 'ap-southeast-1') }}"

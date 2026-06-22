@@ -44,6 +44,64 @@ documentation-debt closure, not scope creep (no new model objects, no new pipeli
 3. ⬜ **TODO — row-count reconciliation** EDL→`bridge_ad_chunk` (inner join can silently drop EDL
    rows whose `chunk_id` is absent from `fact_chunk`). HIGH.
 
+## Bronze source wiring — FIXED 2026-06-22 (@senior-data-engineer)
+Gap: `source('bronze','bronze_asset_raw')` / `bronze_ad_performance_raw` had no pointer to real
+S3 — `_sources.yml` had no `meta.external_location`, no `macros/` existed, `profiles.yml`'s S3
+settings were commented out. Found while building `scripts/run_gemini_extract.py` /
+`ingest_drive_to_s3.py` (those write real S3 paths; dbt couldn't read them back).
+- **`profiles.yml`**: activated `settings: {s3_region: ...}` (was commented out), reading
+  `AWS_REGION` env var (default `ap-southeast-1`, matches `.env.example`). Credentials resolve
+  via default AWS credential chain — same chain the scripts' `CREATE SECRET (..., PROVIDER
+  CREDENTIAL_CHAIN)` pattern uses, no new auth mechanism introduced.
+- **`models/staging/_sources.yml`**: added `meta.external_location` to both tables (dbt-duckdb
+  native source feature — confirmed in `relation.py`, not a custom macro):
+  - `bronze_asset_raw` → `s3://{S3_BUCKET}/bronze/{CLIENT_ID}/asset_raw/*.parquet` (glob across
+    all asset files for the active client partition — matches `run_gemini_extract.py`'s
+    one-file-per-`asset_id` write pattern exactly).
+  - `bronze_ad_performance_raw` → `s3://{S3_BUCKET}/bronze/{CLIENT_ID}/ad_performance_raw/*.parquet`
+    (same naming convention; no writer script exists yet for this one — path is ready, not yet fed).
+  - `CLIENT_ID` defaults to `demo_client` (matches `.env.example` + the DAG's `Param` default) —
+    resolves ONE client per dbt invocation, mirroring the DAG's single-client-per-run contract.
+- **No macro needed** — `meta.external_location` is sufficient; did not add a `macros/` directory.
+- **Verified**: `dbt parse` clean, `dbt compile` clean (18 models / 17 tests / 4 seeds / 2 sources,
+  zero errors), `dbt seed` 4/4 PASS. Compiled SQL confirmed resolving to
+  `s3://creative-intel-lake/bronze/demo_client/asset_raw/*.parquet` (proof, not just parse-success).
+- **Flagged, not decided here** (routes to @data-architect if/when needed): multi-client
+  cross-partition reads (globbing across ALL `client_id`s in one dbt build, e.g. for a multi-tenant
+  backfill) are out of scope — current fix resolves exactly one client per run, matching today's
+  DAG contract. Also unresolved (pre-existing, not introduced by this fix, flagged in
+  `ingest_drive_to_s3.py`'s own header): whether `client_id` partitioning is mandatory or
+  optional-with-blank-fallback — both code paths exist; DAG always populates it today so this
+  didn't block the fix, but the doc conflict is still open.
+
+## Bronze grain — VETOED + FIXED 2026-06-22 (@data-architect)
+`run_gemini_extract.py`'s first draft wrote chunk-grain Bronze (one row per chunk), matching
+what `stg_gemini_raw.sql` happened to already assume (a `select` with no `unnest()`).
+**@data-architect VETOED this** — it re-litigates ADR-003's own "Rejected alternatives" row
+("Chunk in the Python extraction step (pre-Bronze)": rejected because "the raw artifact
+would no longer be the verbatim API response"). Required fix = Option B:
+- **`scripts/run_gemini_extract.py`**: now writes Bronze at **asset grain** — one row per
+  asset, `raw_response` = the verbatim Gemini JSON envelope untouched, +
+  `asset_id`/`content_sha256`/`model_version`/`prompt_version`/`chunk_count`/`load_ts`.
+  `chunk_count` = `len(chunks)` from the response, satisfying
+  `great_expectations/expectations/bronze_asset_raw.json`'s CRITICAL gate (confirmed by DA as
+  already-correctly-asset-grain — no change needed to that file).
+- **`models/staging/stg_gemini_raw.sql`**: now does the actual explosion its own header
+  comment always promised — `unnest(cast(json_extract(raw_response,'$.chunks') as json[]))
+  with ordinality`, generating `chunk_id` deterministically (`asset_id || '_' ||
+  lpad(chunk_sequence,3,'0')`) so re-parsing the same frozen Bronze row is reproducible.
+  `int_chunk_cleaned.sql` and everything in Gold are unchanged (same chunk-grain contract
+  they always expected).
+- Added `json` to `profiles.yml` extensions (needed for `json_extract`/array casts).
+- **Verified for real** (not just parse-clean): wrote a real asset-grain Bronze parquet to
+  the throwaway `S3_STAGING_BUCKET`, read it back, ran the exact compiled `stg_gemini_raw.sql`
+  unnest logic against it via real S3 — got the correct 2-row chunk-grain output with right
+  types (`VARCHAR[]` arrays intact). Cleaned up all test artifacts after. `dbt parse` +
+  `dbt compile` + `dbt seed` + `dbt build -s +marts.core` all clean — single expected failure
+  remains (`stg_gemini_raw`: no real Bronze data exists yet for `demo_client`, since no real
+  video has been extracted) — same failure point as before this fix, now with a wiring-proves
+  error message ("no files match") instead of a wiring-is-broken one ("schema does not exist").
+
 ## Owner directive — 2026-06-22 → ratified as ADR-005
 **Storage = unified S3 (no MinIO). Serving = Snowflake Cortex veneer over Gold S3.**
 Owner overrode cabinet local-first + the "no Snowflake" boundary; trial credits cover cost.

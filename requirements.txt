@@ -1,7 +1,9 @@
 dbt-duckdb>=1.8
 duckdb>=1.1
 great-expectations>=0.18
-google-generativeai>=0.8
+google-genai>=2.0                # current SDK (google-generativeai is fully EOL — see run_gemini_extract.py)
+google-api-python-client>=2.100   # Drive API v3 (ingest_drive_to_s3.py) — direct dep, not transitive
+google-auth>=2.23                # service-account credentials for headless Drive auth
 pandas>=2.0
 scipy>=1.11
 boto3>=1.34
