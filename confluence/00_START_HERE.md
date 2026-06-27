@@ -57,18 +57,21 @@ the design, not an obstacle.
 
 ## Your onboarding reading path
 
-Read these Confluence pages in order (each has a repo source path in backticks for when you want the
-raw file):
+Eight pages, in order — the standard DE-team doc set, each page telling you who it's for:
 
-1. **Architecture Decisions** — the important "why" calls, distilled. `confluence/01_ARCHITECTURE_DECISIONS.md`
-2. **Pipeline Overview** — source → landing → bronze → silver → gold flow. `architecture/STACK_AND_FLOW.md`
-3. **dbt DAG** — how the models depend on each other. `architecture/DBT_DAG.md`
-4. **Data Model** — the ERD: tables, grain, graph edges vs star facts. `architecture/ERD_consolidated.md`
-5. **Data Contract & Quality** — schema, nullability, mapping, DQ gates. `architecture/STTM.md`,
-   `architecture/LINEAGE_CONTRACT.md`, `architecture/DATA_DICTIONARY.md`, `architecture/DQD.md`
-6. **Specs** — what each feature is supposed to do. `architecture/SPEC_v1_search.md`,
-   `architecture/SPEC_v1.5_performance_marts.md`
-7. **Build Status** — what's actually built and verified vs. still open. `PROJECT_STATUS.md`
+1. **Pipeline Documentation** — the flow, source → landing → bronze → silver → gold. Read by
+   everyone. `confluence/02_PIPELINE_DOCUMENTATION.md`
+2. **Data Contract** — schema, types, mandatory fields, null rules, lineage/identity rules. Read by
+   the source team & data engineers. `confluence/03_DATA_CONTRACT.md`
+3. **Architecture Decisions (ADR)** — why DuckDB not Spark, content-hash identity, etc. Read by
+   architects & reviewers. `confluence/01_ARCHITECTURE_DECISIONS.md`
+4. **Data Dictionary** — what every column means. Read by BI & analysts. `architecture/DATA_DICTIONARY.md`
+5. **Runbook** — how to rerun the pipeline on failure. Read by support & ops. **Stub today** — not
+   real yet, see the page for why. `confluence/04_RUNBOOK.md`
+6. **Release Notes** — what changed, most recent first. Read by everyone. `confluence/05_RELEASE_NOTES.md`
+7. **Known Issues** — bugs/gaps not yet fixed. Read by the team. `confluence/06_KNOWN_ISSUES.md`
+8. **Incident Postmortem** — root cause of production issues. Read by engineering. **Stub today** —
+   no real incident yet. `confluence/07_INCIDENT_POSTMORTEM.md`
 
 After this, you'll know enough to pick up a maintenance or optimization task and know which ADR and
-which gate it answers to.
+which gate it answers to. The detailed build log behind all of this is `PROJECT_STATUS.md`.

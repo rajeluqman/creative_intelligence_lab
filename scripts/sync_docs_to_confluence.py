@@ -45,21 +45,36 @@ REQUIRED_ENV = [
 # updates the existing page instead of creating a duplicate.
 PUBLISH_SET: list[tuple[str, str | None]] = [
     ("confluence/00_START_HERE.md", "Start Here"),
-    ("confluence/01_ARCHITECTURE_DECISIONS.md", "Architecture Decisions"),
+    # 1. Pipeline Documentation
+    ("confluence/02_PIPELINE_DOCUMENTATION.md", "Pipeline Documentation"),
     ("architecture/STACK_AND_FLOW.md", None),
     ("architecture/DBT_DAG.md", None),
-    ("architecture/ERD_consolidated.md", None),
-    ("architecture/DATA_MODEL.md", None),
-    ("architecture/DATA_MODEL_v1.5_PERFORMANCE.md", None),
-    ("architecture/STTM.md", None),
-    ("architecture/LINEAGE_CONTRACT.md", None),
-    ("architecture/DATA_DICTIONARY.md", None),
-    ("architecture/DQD.md", None),
-    ("architecture/BOUNDARY_CONTRACT.md", None),
     ("architecture/BRD.md", None),
     ("architecture/DRD.md", None),
     ("architecture/SPEC_v1_search.md", None),
     ("architecture/SPEC_v1.5_performance_marts.md", None),
+    # 2. Data Contract
+    ("confluence/03_DATA_CONTRACT.md", "Data Contract"),
+    ("architecture/STTM.md", None),
+    ("architecture/LINEAGE_CONTRACT.md", None),
+    ("architecture/BOUNDARY_CONTRACT.md", None),
+    ("architecture/ERD_consolidated.md", None),
+    ("architecture/DATA_MODEL.md", None),
+    ("architecture/DATA_MODEL_v1.5_PERFORMANCE.md", None),
+    ("architecture/DQD.md", None),
+    # 3. ADR (title kept stable — already live; renaming would orphan the existing page)
+    ("confluence/01_ARCHITECTURE_DECISIONS.md", "Architecture Decisions"),
+    # 4. Data Dictionary (title kept stable — already live as "DATA_DICTIONARY")
+    ("architecture/DATA_DICTIONARY.md", None),
+    # 5. Runbook
+    ("confluence/04_RUNBOOK.md", "Runbook"),
+    # 6. Release Notes
+    ("confluence/05_RELEASE_NOTES.md", "Release Notes"),
+    # 7. Known Issues
+    ("confluence/06_KNOWN_ISSUES.md", "Known Issues"),
+    # 8. Incident Postmortem
+    ("confluence/07_INCIDENT_POSTMORTEM.md", "Incident Postmortem"),
+    # Detailed build log behind Release Notes
     ("PROJECT_STATUS.md", None),
 ]
 

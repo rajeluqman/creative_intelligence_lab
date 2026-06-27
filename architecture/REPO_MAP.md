@@ -11,7 +11,7 @@
 >
 > Not mapped (by design): `.github/`, lockfiles, `*.example`, secret templates, settings.
 
-**117 files mapped.**
+**123 files mapped.**
 
 ## Architecture Decision Records
 
@@ -221,6 +221,12 @@
 | `README_BUILD.md` | Build quickstart | — | — |
 | `confluence/00_START_HERE.md` | Creative Intelligence Pipeline — Start Here | — | — |
 | `confluence/01_ARCHITECTURE_DECISIONS.md` | Creative Intelligence Pipeline — Architecture Decisions (start here) | — | — |
+| `confluence/02_PIPELINE_DOCUMENTATION.md` | Pipeline Documentation | — | — |
+| `confluence/03_DATA_CONTRACT.md` | Data Contract | — | — |
+| `confluence/04_RUNBOOK.md` | Runbook | — | — |
+| `confluence/05_RELEASE_NOTES.md` | Release Notes | — | — |
+| `confluence/06_KNOWN_ISSUES.md` | Known Issues | — | — |
+| `confluence/07_INCIDENT_POSTMORTEM.md` | Incident Postmortem | — | — |
 
 ## Other
 
