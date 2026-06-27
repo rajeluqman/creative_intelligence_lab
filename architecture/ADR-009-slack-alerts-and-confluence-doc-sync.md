@@ -86,3 +86,36 @@ ADR) — the same set a human would read to understand the project, no smaller, 
 - **Bounded — explicitly not done here:** CI alerts, budget alerts, Confluence Server/DC auth,
   and wiring the Confluence sync into any automated trigger (CI/DAG). Each is a separate future
   decision, not retroactively claimed by this ADR.
+
+## Addendum (2026-06-27) — onboarding IA: curated set, not a 1:1 mirror
+
+**What changed.** The original sync published `PROJECT_STATUS.md` + **every** `architecture/*.md` as
+a flat list of pages. That produced 24+ pages including 12 separate ADR pages, `REPO_MAP.md`, and the
+internal/assistant-operation ADRs — a dump a new engineer cannot onboard from. Owner reframed the
+goal (2026-06-27): Confluence is the **onboarding surface** — a newcomer reads it first to understand
+the whole pipeline, *then* maintains/optimizes. So the sync now publishes a **curated, ordered set**
+(`PUBLISH_SET` in `scripts/sync_docs_to_confluence.py`), fronted by two new hub pages in
+`confluence/`:
+- `confluence/00_START_HERE.md` — onboarding landing: what the project is, the five hard problems,
+  the stack, and an ordered reading path.
+- `confluence/01_ARCHITECTURE_DECISIONS.md` — the important ADRs **consolidated into one page**
+  (Core: 001/002/003/005/006; Secondary: 004/007/008), each with "why it matters" + a link to the
+  full ADR; the internal/governance ADRs (009–012) are listed but de-emphasized.
+
+**Deliberately excluded from Confluence** (stay in the repo as source of truth): the 12 individual
+ADR pages (replaced by the consolidated page), `REPO_MAP.md` (dev navigation, not onboarding), and
+`debate/` (already excluded, historical).
+
+**Prune.** A new `--prune` flag deletes live pages carrying the project prefix that are no longer in
+the curated set (the old per-ADR pages, REPO_MAP). Destructive, so it is opt-in and logs every
+deletion; `--dry-run` previews both the publish set and the prune target. Confluence retains deleted
+pages in trash, so this is recoverable.
+
+**Unchanged / reaffirmed:** still Confluence Cloud Basic Auth, still `markdown`→storage-HTML
+(approximate fidelity, ADR rejected-alt #3 stands), still **manual-run only** (rejected-alt #4
+stands — not wired into CI/DAG). No new dependency added (stdlib + `markdown` + `requests`). The repo
+remains the source of truth; Confluence is derived and reproducible from `PUBLISH_SET`.
+
+**Rejected here:** deep Confluence page-tree nesting (section parents + re-parenting the existing live
+pages). Rejected for now — re-parenting a live space via the API is fiddly and risky; the Start-Here
+hub page provides the onboarding navigation (an ordered reading path) without restructuring the tree.

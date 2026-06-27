@@ -11,7 +11,7 @@
 >
 > Not mapped (by design): `.github/`, lockfiles, `*.example`, secret templates, settings.
 
-**115 files mapped.**
+**117 files mapped.**
 
 ## Architecture Decision Records
 
@@ -116,7 +116,7 @@
 | `scripts/run_gemini_extract.py` | S3 video -> Gemini (Flash, responseSchema) -> bronze_asset_raw (verbatim JSON). | env_guard.py, ingest_drive_to_s3.py | — |
 | `scripts/search_cli.py` | v1 search + mix-and-match demo CLI — architecture/SPEC_v1_search.md (Owner: @senior-data-engineer). | — | — |
 | `scripts/significance_post_step.py` | SUGGESTIVE-tier significance: DuckDB -> pandas -> scipy Mann-Whitney U + Bonferroni. | — | — |
-| `scripts/sync_docs_to_confluence.py` | Publish PROJECT_STATUS.md + architecture/*.md to Confluence as living documentation. | — | — |
+| `scripts/sync_docs_to_confluence.py` | Publish the curated onboarding doc set to Confluence as living documentation. | — | — |
 | `setup.sh` | — | — | — |
 
 ## Airflow DAGs
@@ -219,6 +219,8 @@
 | `PROJECT_STATUS.md` | PROJECT STATUS — Creative Intelligence Pipeline | — | — |
 | `README.md` | Creative Intelligence Pipeline — Cabinet Convene (Side Project) | — | — |
 | `README_BUILD.md` | Build quickstart | — | — |
+| `confluence/00_START_HERE.md` | Creative Intelligence Pipeline — Start Here | — | — |
+| `confluence/01_ARCHITECTURE_DECISIONS.md` | Creative Intelligence Pipeline — Architecture Decisions (start here) | — | — |
 
 ## Other
 
