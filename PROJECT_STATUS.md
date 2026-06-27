@@ -857,11 +857,33 @@ get-caller-identity` + `git remote -v` this session):**
   `origin/main`, ADR touched — OK) + its self-test, `gen_repo_map.py --check` (126 files, was 125
   — the new ADR; regenerated then re-checked clean). Also fixed in the same pass: `CLAUDE.md`'s
   "Architecture of Record" ADR list was stale at ADR-008 (pre-existing gap, same class as the
-  2026-06-25 ADR-006/007 one) — now lists through ADR-013. **Not yet done — cannot be done from
-  here:** an actual live push-to-main run of `real-build` to prove the OIDC handshake itself
-  works end-to-end (this repo only has push access to a feature branch in this session; the job
-  is correct-by-inspection and gate-clean, not yet exercised by a real GitHub Actions run). Whoever
-  merges to `main` next should watch the Actions tab for the first `real-build` run.
+  2026-06-25 ADR-006/007 one) — now lists through ADR-013.
+
+**Real push-to-main run, 2026-06-27 (same day) — OIDC handshake PROVEN, one real bug found and
+fixed.** Owner authorized fast-forwarding `main` (which had never moved past its 1-commit
+"Initial commit" stub — the entire real project history lived on the feature branch) to actually
+exercise `real-build`. **The `Configure AWS credentials` step succeeded** — `gh run watch`
+confirms `sts:AssumeRoleWithWebIdentity` against `creative-intel-ci-role` worked end-to-end, no
+static key involved — this is the actual proof ADR-013 set out to get, not just a gate-clean
+inspection. All 8 real external Gold models built successfully against real S3 through the
+OIDC-assumed role (`dim_asset`, `bridge_asset_lineage`, `fact_extraction_run`,
+`int_chunk_cleaned`, `bridge_chunk_compatibility`, `dim_keyword_bridge`, `dim_theme_bridge`,
+`fact_chunk` — all "OK created sql external model"), proving the least-privilege Silver/Gold
+read+write grant works, not just the role-assumption step. **Real bug found by this run (not the
+AWS/OIDC layer — a CI-job-completeness bug in my own `real-build` step):** `dbt build -s
++marts.core`'s node selector never loads the `edit_decision_list`/`map_ad_asset` seeds (they're
+`marts.performance` lineage, outside `+marts.core`'s ancestor set) — but
+`assert_edl_bridge_ad_chunk_reconciles.sql` references `edit_decision_list` by raw table name, not
+`ref()`/`source()`, so dbt can't scope it out of node selection and it ran anyway, hitting
+`Catalog Error: Table with name edit_decision_list does not exist!` on the fresh ephemeral CI
+catalog (this never surfaced locally because local dev's persistent `target/dev.duckdb` already
+had the seed loaded from an earlier full `dbt seed`). Fixed: added a `dbt seed` (all 5, unscoped)
+step before `dbt build -s +marts.core` in `real-build`, mirroring the documented local quickstart
+(`README_BUILD.md`: "`dbt seed && dbt build -s marts.core`"). **Verified for real:** reproduced
+the exact failure and the fix locally first (deleted `target/dev.duckdb`, fresh `dbt seed` then
+`dbt build -s +marts.core` → PASS=36 ERROR=0) before pushing; full governance sweep re-run clean
+(doc-reference, repo-map `--check`) after the `ci.yml` edit. Pushed the fix to `main`; rerun
+pending confirmation in the Actions tab.
 
 ## Next step when resuming (v1 path — build feature store FIRST, serve AFTER it has rows)
 

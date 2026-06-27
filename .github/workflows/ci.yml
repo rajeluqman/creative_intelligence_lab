@@ -132,4 +132,8 @@ jobs:
           CLIENT_ID: voltecx
         run: |
           dbt deps
+          # `dbt seed` (all 5, unscoped) before the build: assert_edl_bridge_ad_chunk_reconciles
+          # references edit_decision_list by table name, not ref(), so node selection on
+          # `-s +marts.core` alone never loads it — caught by a real CI failure, not anticipated.
+          dbt seed
           dbt build -s +marts.core
