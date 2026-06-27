@@ -18,6 +18,9 @@
   a VECTOR view and not the managed Cortex Search Service. Airflow standalone restarted + verified
   clean this session (no import errors, `creative_intel_pipeline_v1` resolves). **Item 3's last
   three open sub-items closed same day** (ADR-005 Addendum 2026-06-27 #5) — see immediately below.
+  **CI now runs a real `dbt build` against real S3 on every push to `main`** via AWS OIDC role
+  federation (ADR-013) — built, pushed to `main`, and proven green on a real Actions run (not
+  just gate-clean) — see "AWS OIDC for real `dbt build` in CI" below.
 - **Cortex Search Service was tried and is a dead end on this account — don't re-attempt it.**
   Three real, successive blockers (BYO-embedding conflict → Dynamic Tables reject external tables
   → trial-tier accounts can't run the AI function it needs at all) — full account-tier wall, not
@@ -44,17 +47,23 @@
   inside the new `refresh` phase is still a CREATE statement): an actual live `--apply` of
   `--phase refresh` and a live run of `reconcile_snowflake_serving.py` against the real account.
   Full detail: ADR-005 Addendum (2026-06-27 #5).
-- **AWS OIDC for real `dbt build` in CI — DONE 2026-06-27 (all 4 parts, see ADR-013 + dated
-  section below for full evidence).** Owner finished Parts A–C in the AWS console (OIDC provider,
-  `creative-intel-ci-role`, trust policy, least-privilege inline policy) and handed over the role
-  ARN; Part D (`ci.yml` wiring + the new `architecture/ADR-013-aws-oidc-ci-federation.md`) done
-  this session, full governance sweep clean. **Still open, not closeable from here:** a real
-  push-to-`main` to actually exercise the `real-build` job for the first time (this session only
-  has a feature branch checked out) — whoever merges next should watch the Actions tab.
-- **Next concrete step — ONE open thread (the AWS OIDC one above is now closed):** owner sign-off
-  to run the new Snowflake `refresh` phase + `reconcile_snowflake_serving.py` live against the
-  real account (unchanged from before, still open). Separately untouched: Airflow `@daily`,
-  `chunk_theme` vocab-drift design (no default-without-asking answer for either).
+- **AWS OIDC for real `dbt build` in CI — FULLY CLOSED 2026-06-27, proven live, not just
+  written.** All 4 parts done (ADR-013 + dated section below for full evidence): owner built
+  Parts A–C in the AWS console (OIDC provider, `creative-intel-ci-role`, trust policy,
+  least-privilege inline policy) and handed over the role ARN; Part D (`ci.yml`'s `real-build`
+  job) wired same session. **Then actually exercised end-to-end** — owner authorized
+  fast-forwarding `main` (it had never moved past its 1-commit stub) to fire the job for real:
+  first run's `Configure AWS credentials` step succeeded (OIDC handshake proven — no static key),
+  all 8 Gold external tables built against real S3 through the role, but the build step itself
+  failed on a real bug (`-s +marts.core` never seeds `edit_decision_list`, which a singular test
+  references by raw name, not `ref()`). Fixed (`dbt seed` added before the build), reproduced
+  locally first, re-pushed to `main` — **second run fully green, both jobs.** Commits
+  `bdce629` (wiring) + `f51e7a9` (the seed fix), both on `main` and
+  `docs/cabinet-doc-gap-closure`, in sync with `origin`. **Nothing left open on this thread.**
+- **Next concrete step — ONE open thread left in the whole project:** owner sign-off to run the
+  Snowflake `refresh` phase + `reconcile_snowflake_serving.py` live against the real account
+  (named open since before this session, still open — see item 3 above). Separately untouched,
+  no default-without-asking answer for either: Airflow `@daily`, `chunk_theme` vocab-drift design.
 - **Scope decision, 2026-06-27 (same session) — v2 BACKLOG permanently REJECTED, not deferred.**
   Owner: "this project is solely the data pipeline, full stop." `CLAUDE.md`'s "v1 Scope (LOCKED)"
   and `BACKLOG.md` both rewritten — the 4 downstream apps (search-engine UI, RAG generator,
