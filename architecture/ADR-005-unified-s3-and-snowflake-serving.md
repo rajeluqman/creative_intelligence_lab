@@ -123,3 +123,65 @@ phantom row. The ADR-005 reconciliation test must read **consistently** (both ra
 null-filtered) or it will false-positive on these two stubs. Verified 2026-06-25: the 6 non-stub
 models reconcile exactly (dbt-view count == raw httpfs S3 read: 169/169 chunks, 19 assets,
 363/924/169); only the two stubs show the 0-vs-1 gap.
+
+## Addendum (2026-06-27) — account objects + storage integration + external tables built
+
+§B's "showcased serving demo" gets its first real account-level objects. The trial Snowflake
+account turned out to be **shared with the sibling `pharma_novartis_sttm` project** (same login,
+`NOVARTISMANG` / `NOVARTIS_STTM_ROLE`) — confirmed via a real read-only `SHOW WAREHOUSES`/`SHOW
+DATABASES` before touching anything, not assumed from the trial having one account.
+
+**Decision: dedicated objects, not reuse.** `CREATIVE_INTEL_WH` (XSMALL, `AUTO_SUSPEND=60`),
+`CREATIVE_INTEL_DB`, and a new scoped `CREATIVE_INTEL_ROLE` (USAGE+OPERATE on the warehouse, USAGE
+on the database, SELECT on exactly the 8 Gold external tables below — not the Novartis project's
+own `SNOWFLAKE_GOLD_READER`, which was checked and confirmed unrelated/Novartis-only before being
+ruled out as a candidate, and not blanket `ALL` privileges, which this session tried once and was
+correctly the broader/non-minimal grant). Created via `ACCOUNTADMIN` — the only role with
+account-level `CREATE WAREHOUSE`/`CREATE DATABASE`; `NOVARTIS_STTM_ROLE` lacks it, confirmed by a
+real failed attempt first, not assumed.
+
+**Storage integration over reusing static credentials.** A first attempt embedded the AWS access
+key/secret directly in a `CREATE STAGE` statement — correctly blocked, because that leaves the
+secret sitting in plaintext in Snowflake's own `QUERY_HISTORY`, a persistent queryable log on an
+account shared with another project. Fixed with a **storage integration** (IAM role trust, zero
+static secrets sent to Snowflake): `CREATIVE_INTEL_S3_INTEGRATION`
+(`STORAGE_ALLOWED_LOCATIONS = ('s3://creative-intel-lake/gold/')` only) → `DESC STORAGE
+INTEGRATION` gives Snowflake's own IAM user ARN + external ID → those get pasted into the trust
+policy of an AWS-console-created IAM role (`creative-intel-snowflake-role`, inline policy scoped
+to `s3:GetObject`/`s3:ListBucket` on `gold/*` only) → `GOLD_STAGE` created against the integration
+(no `CREDENTIALS` clause) → `LIST @GOLD_STAGE` returning all 8 real files proved the trust live
+before any table DDL ran.
+
+**All 8 Gold models built as external tables** (`CREATE ... USING TEMPLATE` + `INFER_SCHEMA`, one
+`ALTER ... REFRESH` each): the 7 `marts.core` models + `chunk_embedding` (the BYO-embedding model
+from `scripts/generate_embeddings.py`, same client-partitioned `gold/<model>/<CLIENT_ID>/` path
+convention as Addendum #2 above — the stage URL is the shared `gold/` prefix, so one stage covers
+every model). **Row-count reconciliation, both sides fresh:** a direct DuckDB httpfs read of the
+same S3 parquet vs. `SELECT COUNT(*)` through Snowflake using `CREATIVE_INTEL_ROLE` (not
+`ACCOUNTADMIN`) matched exactly on all 8, including the two known-stub phantom-rows (1/1, per the
+"Carried-forward finding" above — observed live through Snowflake exactly as predicted, not a new
+bug).
+
+**Naming gotcha to carry forward:** `USING TEMPLATE`/`INFER_SCHEMA` quotes every inferred column
+name, so columns are case-sensitive lowercase in Snowflake (`"asset_id"`, not
+`ASSET_ID`/`asset_id` unquoted) — any future query, BI tool, or Cortex Search build against these
+tables must quote column names or hit `invalid identifier`.
+
+**Governance gap closed in the same pass it was found:** this session's SQL was originally run ad
+hoc with no checked-in artifact — broke this repo's "governance is code, not vigilance" pattern
+used everywhere else (hooks, CI contracts), and contradicted this ADR's own Cost-discipline promise
+("re-provision later = re-run the capture-as-code provisioning script ... not a backfill"). Fixed:
+`scripts/provision_snowflake_serving.py` (new) — idempotent `IF NOT EXISTS` SQL for all three
+phases above (account / storage / tables), dry-run by default (prints the plan, no connection, no
+credentials needed), `--apply` to actually execute. Re-running it against the objects created this
+session is a no-op, not a re-creation — verified via `--phase all` dry-run reproducing exactly the
+warehouse/role/integration/table names and the real `S3_BUCKET`/`CLIENT_ID` values already in
+`.env`.
+
+**Still open** (next workstream, not this addendum): Cortex Search over `chunk_embedding.embedding`
+— it infers as `VARIANT` via `INFER_SCHEMA`, not Snowflake's native `VECTOR`, so Cortex Search needs
+an explicit cast/reshape step first, never Cortex's own `EMBED_TEXT` (§B — single embedding surface
+rule unchanged). Also open: a *checked-in, automated* reconciliation test (today's match was a real
+but manual one-off query, not a script that re-runs on every refresh), `COST_LOG.md`, and wiring
+Airflow's `refresh_serving` task to an `ALTER EXTERNAL TABLE ... REFRESH` call per model (it remains
+the honest no-op named in ADR-008).

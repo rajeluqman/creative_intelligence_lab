@@ -11,3 +11,4 @@ tqdm>=4.66
 ruff>=0.6
 requests>=2.31         # Confluence doc sync (scripts/sync_docs_to_confluence.py, ADR-009)
 markdown>=3.6           # Confluence doc sync — Markdown -> storage-format HTML (ADR-009)
+snowflake-connector-python>=3.12   # Cortex serving veneer connectivity (ADR-005)

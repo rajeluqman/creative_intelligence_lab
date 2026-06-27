@@ -10,11 +10,24 @@
 - **Paste-ready first prompt for next session:**
   `Read PROJECT_STATUS "▶ RESUME HERE" and do the next step. Don't re-read the whole repo — open only the files named here, fresh.`
 - **Current state (1 line):** v1 + v1.5 built and verified for real (19/19 assets, 169 chunks,
-  Silver/Gold on S3, VSS semantic search live, perf marts smoke-tested+reverted); the operating
-  protocol ADR-012 + ADR-011 rescope just landed (2026-06-27).
-- **Next concrete step:** owner's pick of the still-open items — Snowflake Cortex serving
-  (Next-step item 3), or one of the owner-gated decisions (CI `dbt build` secrets, Airflow
-  `@daily`, `chunk_theme` vocab-drift design). None are started; all need an owner call, not a default.
+  Silver/Gold on S3, VSS semantic search live, perf marts smoke-tested+reverted); Snowflake
+  serving partially live (2026-06-27) — storage integration + 8 external tables over real Gold S3,
+  reconciled row-for-row via the dedicated `CREATIVE_INTEL_ROLE`; Cortex Search not built yet.
+  Airflow standalone restarted + DAG-folder bug fixed same day (see "Re-started 2026-06-27" under
+  the Airflow section) — `creative_intel_pipeline_v1` loads clean, no import errors.
+- **Next concrete step:** Cortex Search over the embedding column (needs a VARIANT→VECTOR reshape
+  first — `CHUNK_EMBEDDING.embedding` landed as `VARIANT` via `INFER_SCHEMA`, not native `VECTOR`;
+  see "Snowflake Cortex serving" item 3 for the full open list: Cortex Search, the checked-in
+  reconciliation test, `COST_LOG.md`, wiring `refresh_serving`). Separately, the remaining
+  owner-gated decisions are still untouched (CI `dbt build` secrets, Airflow `@daily`, `chunk_theme`
+  vocab-drift design).
+- **If Airflow isn't running when you resume:** it's a background process in this container, not
+  guaranteed to survive a session/container restart. Restart with
+  `AIRFLOW_HOME=/workspaces/creative_intelligence_lab/airflow_home` **explicitly set** — without
+  it, `airflow standalone` silently defaults to `~/airflow` (a different, empty instance) and
+  `creative_intel_pipeline_v1` won't appear. `airflow_home/airflow.cfg`'s `dags_folder` was already
+  fixed to point at the real `dags/` path 2026-06-27, so that part doesn't need re-fixing. Admin
+  login: `admin` / see `airflow_home/standalone_admin_password.txt`.
 - **Files in play for that step:** see "Next step when resuming" (bottom of this file) for the
   exact paths per item.
 - **Gate to run before declaring any step done:** `python tests/doc_reference_contract.py <doc>` +
@@ -424,6 +437,21 @@ all SUCCESS in one DagRun.
 triggerer), reachable via the Codespace's forwarded port 8080 (PORTS tab in VS Code). Owner
 asked to actually see the run, not just trust CLI output.
 
+**Re-started 2026-06-27 — real bug found and fixed (not part of any planned work):** this
+session's container had no running Airflow process (confirmed via `ps aux` + a dead port 8080
+before restarting), so `airflow standalone` was re-run — but without `AIRFLOW_HOME` set, it
+defaulted to `~/airflow` (a fresh instance with none of this project's history) instead of the
+real `airflow_home/` this repo already had from 2026-06-25. Killed that wrong instance, then
+found the real `airflow_home/airflow.cfg`'s own `dags_folder` pointed at
+`airflow_home/dags` — a directory that **does not exist** on this filesystem (likely lost between
+sessions; `airflow.cfg`/`airflow.db` persisted, that one subdirectory didn't). Fixed by pointing
+`dags_folder` at the real project path (`/workspaces/creative_intelligence_lab/dags`), then
+restarted with `AIRFLOW_HOME=/workspaces/creative_intelligence_lab/airflow_home` explicitly set.
+**Verified for real:** `airflow dags list` now shows `creative_intel_pipeline_v1` resolving to
+the real `dags/creative_intel_pipeline.py`; `airflow dags list-import-errors` → none. Re-used the
+existing admin user/password from `airflow_home/standalone_admin_password.txt` (same login as
+2026-06-25 — the user database persisted even though the dags-folder path didn't).
+
 ## Operational notifications — BUILT 2026-06-25 (ADR-009): Slack alerts + Confluence doc sync
 Owner asked for: (1) Slack alert on pipeline failure (clarified scope, asked directly: Airflow
 task failures only — not CI, not budget, both named OUT for this pass) and (2) Confluence
@@ -706,13 +734,80 @@ history):**
    `--theme`/`--sentiment`/`--contains` path). Verify with real embeddings over the real 169
    chunks + an eyeball check that nearest-neighbor results make sense on real Malay transcript
    content.~~
-3. **Snowflake Cortex serving (after 1 and 2 land).** `.env`'s `SNOWFLAKE_WAREHOUSE`/
-   `SNOWFLAKE_DATABASE`/`SNOWFLAKE_ROLE` are still blank — fill before connecting (account/user/
-   password already set). External tables over the now-real `gold/` S3; Cortex Search over the
-   BYO-embedding column (never Cortex `EMBED_TEXT` — ADR-005 §B, single embedding surface only).
-   Build the row-count+key reconciliation test ADR-005 names as the spine boundary. `COST_LOG.md`
-   still wanted as a monitoring record (the 2026-06-25 addendum lifted the day-25 teardown
-   countdown, not cost visibility). Provisioning stays owner-gated — confirm before any `CREATE`.
+3. ⬜ **IN PROGRESS — Snowflake Cortex serving (after 1 and 2 land).** Account-level connectivity
+   done 2026-06-27 (owner-confirmed at each `CREATE`, not assumed): the trial Snowflake account
+   turned out to be **shared with the sibling `pharma_novartis_sttm` project** (same login —
+   `NOVARTISMANG`, default role `NOVARTIS_STTM_ROLE`, existing `NOVARTIS_STTM_WH`/`_DB`) — confirmed
+   via a real read-only `SHOW WAREHOUSES`/`SHOW DATABASES` before touching anything. Owner chose
+   **dedicated objects, not reuse**: `CREATIVE_INTEL_WH` (XSMALL, `AUTO_SUSPEND=60`),
+   `CREATIVE_INTEL_DB`, and a new scoped `CREATIVE_INTEL_ROLE` (USAGE+OPERATE on the warehouse,
+   USAGE on the database only — least-privilege, mirrors the Novartis project's own
+   `SNOWFLAKE_GOLD_READER` pattern, which was checked and confirmed unrelated/Novartis-only before
+   being ruled out as a candidate). Created via `ACCOUNTADMIN` (the only role with account-level
+   `CREATE WAREHOUSE`/`CREATE DATABASE`; `NOVARTIS_STTM_ROLE` lacks it — confirmed by a real failed
+   attempt first, not assumed). `.env`/`.env.example` filled;
+   `requirements.txt` += `snowflake-connector-python>=3.12` (boundary contract re-run green — not a
+   banned vector-DB/dashboard dep, it's the ADR-005-approved Cortex veneer's own connectivity lib).
+   **Verified for real:** connected using ONLY the now-filled `.env` values (not `ACCOUNTADMIN`) —
+   `SELECT CURRENT_WAREHOUSE(), CURRENT_DATABASE(), CURRENT_ROLE()` returned exactly
+   `CREATIVE_INTEL_WH`/`CREATIVE_INTEL_DB`/`CREATIVE_INTEL_ROLE`.
+
+   **External tables over real Gold S3 — BUILT 2026-06-27.** First attempt (a `CREATE STAGE`
+   with the literal AWS access key/secret embedded in the SQL) was correctly blocked — that
+   pattern leaves the secret sitting in plaintext in Snowflake's own `QUERY_HISTORY`, a
+   persistent, queryable log on an account shared with the Novartis project. Owner chose the
+   secure fix: a **storage integration** (IAM role trust, zero static secrets sent to Snowflake)
+   over reusing credentials. Owner created `arn:aws:iam::579880301047:role/
+   creative-intel-snowflake-role` by hand in the AWS console (trust policy + an inline policy
+   scoped to `s3:GetObject`/`s3:ListBucket` on `gold/*` only — no broader bucket access). Built:
+   `CREATIVE_INTEL_S3_INTEGRATION` (`STORAGE_ALLOWED_LOCATIONS = ('s3://creative-intel-lake/gold/')`,
+   nothing else) → `DESC STORAGE INTEGRATION` gave the Snowflake-side IAM user ARN + external ID →
+   owner pasted those into the role's trust policy (two-way handshake, no secrets either direction)
+   → `GOLD_STAGE` created against the integration (no `CREDENTIALS` clause) → `LIST @GOLD_STAGE`
+   returned all 8 real files, proving the trust is live, before any table DDL ran.
+   All **8 real Gold models** built as external tables (`CREATE ... USING TEMPLATE` +
+   `INFER_SCHEMA`, one `ALTER ... REFRESH` each): `bridge_asset_lineage`, `bridge_chunk_compatibility`,
+   `chunk_embedding`, `dim_asset`, `dim_keyword_bridge`, `dim_theme_bridge`, `fact_chunk`,
+   `fact_extraction_run`. `CREATIVE_INTEL_ROLE` granted `USAGE` on schema `PUBLIC` + `SELECT` on
+   exactly these 8 tables (not blanket `ALL` — narrower than the original ask, the SELECT-only grant
+   was not blocked, unlike an earlier broader grant attempt this session).
+   **Row-count reconciliation, real numbers, both sides fresh (not from memory):** a direct DuckDB
+   httpfs read of the same S3 parquet (ground truth, queried BEFORE any Snowflake object existed)
+   vs. `SELECT COUNT(*)` through Snowflake **using `CREATIVE_INTEL_ROLE`, not `ACCOUNTADMIN`** —
+   exact match on all 8: `fact_chunk` 169/169, `dim_asset` 19/19, `bridge_chunk_compatibility`
+   363/363, `dim_keyword_bridge` 924/924, `dim_theme_bridge` 169/169, `chunk_embedding` 169/169,
+   and the two known stubs `bridge_asset_lineage`/`fact_extraction_run` 1/1 each (the
+   already-documented phantom-null-row behavior — see "Two Gold stub models produce a phantom row"
+   in `confluence/06_KNOWN_ISSUES.md`, now observed live through Snowflake exactly as predicted, not
+   a new bug). Sample real rows pulled through `FACT_CHUNK` via `CREATIVE_INTEL_ROLE` show genuine
+   Malay-transcript theme/sentiment values (`'Social Proof'`/`'aspirational'`, `'Problem'`/
+   `'frustrated'`), confirming this is live production data, not a stub.
+   **Naming quirk to know about:** the `USING TEMPLATE`/`INFER_SCHEMA` path quoted every column
+   name, so they're case-sensitive lowercase in Snowflake (`"asset_id"`, not `ASSET_ID`/`asset_id`
+   unquoted) — any future query, BI tool, or Cortex Search build against these tables needs to
+   quote column names or it'll hit `invalid identifier` (hit this once already during verification).
+
+   **Still not built:** Cortex Search over the BYO-embedding column (never Cortex `EMBED_TEXT` —
+   ADR-005 §B, single embedding surface only — the `embedding` column above landed as `VARIANT`,
+   not Snowflake's native `VECTOR` type, so Cortex Search setup will need an explicit cast/reshape
+   step, not a direct point-at-the-column), a *checked-in, automated* row-count+key reconciliation
+   test (today's reconciliation was a real but manual one-off, not a script that runs again on
+   every refresh), `COST_LOG.md` monitoring record. Airflow's `refresh_serving` task remains the
+   honest no-op it always was — not rewired yet; wiring it would mean adding
+   `ALTER EXTERNAL TABLE ... REFRESH` calls after each `dbt_build_marts` run, not done in this pass.
+
+   **Governance gap closed same day:** the account/storage-integration/external-table SQL above
+   was originally run ad hoc with no checked-in artifact — contradicted ADR-005's own Cost-discipline
+   promise ("re-provision later = re-run the capture-as-code provisioning script ... not a
+   backfill") and this repo's "governance is code, not vigilance" pattern used everywhere else
+   (hooks, CI contracts). Fixed: `scripts/provision_snowflake_serving.py` (new) — idempotent
+   `IF NOT EXISTS` SQL for all three phases (account / storage / tables), dry-run by default
+   (prints the plan, no connection, no credentials), `--apply` to execute for real. Full
+   rationale + the dedicated-objects/storage-integration decisions: **ADR-005 Addendum
+   (2026-06-27)**. **Verified for real:** `--phase all` dry-run reproduces the exact
+   warehouse/role/integration/table names and real `S3_BUCKET`/`CLIENT_ID` values already in
+   `.env`; `ruff check` + `py_compile` clean; `tests/boundary_contract.py` green (Snowflake
+   connectivity is the ADR-005-approved veneer dep, not banned tech).
 4. ✅ **DONE 2026-06-25 — see "v1.5 performance marts — smoke-tested + reverted" section below
    for full evidence.** ~~v1.5 performance marts — re-confirm data mode with the owner before
    building further. Owner has been directing this turn-by-turn (synthetic-to-prove-the-pipe,

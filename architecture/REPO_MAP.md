@@ -11,7 +11,7 @@
 >
 > Not mapped (by design): `.github/`, lockfiles, `*.example`, secret templates, settings.
 
-**123 files mapped.**
+**124 files mapped.**
 
 ## Architecture Decision Records
 
@@ -113,6 +113,7 @@
 | `scripts/generate_embeddings.py` | Silver chunk text -> Gemini embeddings -> gold/chunk_embedding (BYO, content-hash-gated). | env_guard.py | — |
 | `scripts/ingest_drive_to_s3.py` | Drive -> S3 landing. Tenant-scoped content-hash naming, skip-existing (idempotent). | env_guard.py | run_gemini_extract.py |
 | `scripts/list_unextracted_assets.py` | List asset_ids landed for a client that do NOT yet have a Bronze extraction. | env_guard.py | — |
+| `scripts/provision_snowflake_serving.py` | Capture-as-code Snowflake serving provisioning (ADR-005 §B). | — | — |
 | `scripts/run_gemini_extract.py` | S3 video -> Gemini (Flash, responseSchema) -> bronze_asset_raw (verbatim JSON). | env_guard.py, ingest_drive_to_s3.py | — |
 | `scripts/search_cli.py` | v1 search + mix-and-match demo CLI — architecture/SPEC_v1_search.md (Owner: @senior-data-engineer). | — | — |
 | `scripts/significance_post_step.py` | SUGGESTIVE-tier significance: DuckDB -> pandas -> scipy Mann-Whitney U + Bonferroni. | — | — |
