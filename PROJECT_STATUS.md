@@ -16,19 +16,77 @@
   `search_cli.py --snowflake-semantic`) mirroring the DuckDB VSS path — both query surfaces real
   and verified, see "Cortex Search — tried for real, abandoned..." under item 3 below for why it's
   a VECTOR view and not the managed Cortex Search Service. Airflow standalone restarted + verified
-  clean this session (no import errors, `creative_intel_pipeline_v1` resolves).
+  clean this session (no import errors, `creative_intel_pipeline_v1` resolves). **Item 3's last
+  three open sub-items closed same day** (ADR-005 Addendum 2026-06-27 #5) — see immediately below.
 - **Cortex Search Service was tried and is a dead end on this account — don't re-attempt it.**
   Three real, successive blockers (BYO-embedding conflict → Dynamic Tables reject external tables
   → trial-tier accounts can't run the AI function it needs at all) — full account-tier wall, not
   an engineering gap. ADR-005 Addenda 2026-06-27 #2/#3/#4 have the complete trail. The native
   `VECTOR_COSINE_SIMILARITY` path built instead is the permanent answer for Snowflake-served
   semantic search here.
-- **Next concrete step:** the three items still open under "Snowflake Cortex serving" item 3: a
-  checked-in automated row-count+key reconciliation test, `COST_LOG.md`, and wiring Airflow's
-  `refresh_serving` to real `ALTER EXTERNAL TABLE ... REFRESH` calls (+ a `CREATE OR REPLACE VIEW`
-  resync for `FACT_CHUNK_VECTOR`). Any further Snowflake `CREATE`/`--apply` still needs owner
-  confirmation first, per ADR-005. Separately, the remaining owner-gated decisions are still
-  untouched (CI `dbt build` secrets, Airflow `@daily`, `chunk_theme` vocab-drift design).
+- **DONE 2026-06-27 — the three remaining "Snowflake Cortex serving" item 3 sub-items, per
+  ADR-005 Addendum #5:** (1) `tests/reconcile_snowflake_serving.py` (new) — row-count + key-set
+  reconciliation between real Gold S3 (DuckDB httpfs, ground truth) and the Snowflake external
+  tables, via `CREATIVE_INTEL_ROLE`; registered in `tests/GATES.md`. (2) `COST_LOG.md` created
+  (gitignored, local monitoring artifact per CLAUDE.md). (3) `dags/creative_intel_pipeline.py`'s
+  `refresh_serving` task now does real work for `SERVING_BACKEND=snowflake_cortex`: shells out to
+  the new `scripts/provision_snowflake_serving.py --phase refresh --apply` (8×
+  `ALTER EXTERNAL TABLE ... REFRESH` + a `CREATE OR REPLACE VIEW` resync of `FACT_CHUNK_VECTOR`),
+  then to the new reconciliation script — a mismatch fails the Airflow task loud. `duckdb_vss`
+  (default) stays the honest no-op it always was. **Verified for real, not just parse-clean:**
+  dry-run of `--phase refresh` reproduces the exact 8 `ALTER`/view/grant statements; the
+  reconciliation script fails loud and exact on a missing credential
+  (`missing required env var(s): SNOWFLAKE_PASSWORD - refusing to run`), mirroring `env_guard.py`'s
+  convention; `airflow dags list-import-errors` clean after the DAG edit; full governance-gate
+  sweep clean (ruff, lineage, boundary, doc-reference incl. self-test, repo-map `--check`,
+  adr-coupling incl. self-test, golden test). **Not yet done — needs owner confirmation before
+  executing for real** (ADR-005: "provisioning stays owner-gated" — `CREATE OR REPLACE VIEW`
+  inside the new `refresh` phase is still a CREATE statement): an actual live `--apply` of
+  `--phase refresh` and a live run of `reconcile_snowflake_serving.py` against the real account.
+  Full detail: ADR-005 Addendum (2026-06-27 #5).
+- **AWS OIDC for real `dbt build` in CI — DONE 2026-06-27 (all 4 parts, see ADR-013 + dated
+  section below for full evidence).** Owner finished Parts A–C in the AWS console (OIDC provider,
+  `creative-intel-ci-role`, trust policy, least-privilege inline policy) and handed over the role
+  ARN; Part D (`ci.yml` wiring + the new `architecture/ADR-013-aws-oidc-ci-federation.md`) done
+  this session, full governance sweep clean. **Still open, not closeable from here:** a real
+  push-to-`main` to actually exercise the `real-build` job for the first time (this session only
+  has a feature branch checked out) — whoever merges next should watch the Actions tab.
+- **Next concrete step — ONE open thread (the AWS OIDC one above is now closed):** owner sign-off
+  to run the new Snowflake `refresh` phase + `reconcile_snowflake_serving.py` live against the
+  real account (unchanged from before, still open). Separately untouched: Airflow `@daily`,
+  `chunk_theme` vocab-drift design (no default-without-asking answer for either).
+- **Scope decision, 2026-06-27 (same session) — v2 BACKLOG permanently REJECTED, not deferred.**
+  Owner: "this project is solely the data pipeline, full stop." `CLAUDE.md`'s "v1 Scope (LOCKED)"
+  and `BACKLOG.md` both rewritten — the 4 downstream apps (search-engine UI, RAG generator,
+  ops dashboard, auto-tagger) + ROAS live-connector ingestion + dedicated vector DB are now
+  **REJECTED** (kept named per Clean-ERD "what's OUT stays named," not deleted), not "v2 backlog
+  to maybe build later." v1.5 performance *marts* are unaffected (still core pipeline, just
+  waiting on real ad-performance data — see the v1.5 section below). Verified: `ruff`, doc-reference
+  contract, repo-map `--check` (regenerated — `BACKLOG.md`'s title line changed) all clean.
+- **Real Airflow run + a real bug found and fixed, 2026-06-27 (same session):** owner asked to
+  trigger Airflow now to use any remaining Gemini quota. Triggered
+  `creative_intel_pipeline_v1` for real (`client_id=voltecx`, the real `DRIVE_FOLDER_ID` from
+  `.env`) via the live `airflow dags trigger` (scheduler/webserver/triggerer already up on
+  port 8080) — not `dags test`, so it ran through the real scheduler exactly as it would for any
+  other trigger. **Real bug found:** `sync_drive_to_landing` failed twice
+  (`FileNotFoundError: 'secrets/gdrive-service-account.json   # path to service-account JSON, NOT
+  the JSON itself'`) — the DAG's hand-rolled `_load_dotenv()` (`dags/creative_intel_pipeline.py`)
+  only skipped lines starting with `#`, not inline `# comment` suffixes after a value; bash's
+  `source .env` (the documented manual-run path) strips those, so this gap was invisible until a
+  non-bash parser hit it. Fixed: strip on `r"\s+#"` after `=`, matching bash's unquoted-comment
+  semantics. **Verified for real:** the 3rd retry (post-fix, same DagRun, no manual clear needed —
+  the next retry re-imports the fixed module) succeeded; full DagRun → **SUCCESS**:
+  `sync_drive_to_landing` real (0 new — the client's Drive folder has no videos beyond the 19
+  already-known assets), `list_new_assets` correctly SKIPPED (0 unextracted, **zero Gemini API
+  calls** — cost firewall #2 held, confirming there was genuinely nothing new to spend quota on
+  despite the ask), `extract_chunks` skip-cascaded, `dbt_build_marts`/`ge_validate`/
+  `refresh_serving` all real SUCCESS (`refresh_serving` took the `duckdb_vss` no-op branch,
+  matching `.env`'s `SERVING_BACKEND=duckdb_vss`, output text matches this session's new code
+  exactly). Full governance-gate sweep re-run clean after the fix (ruff, lineage, boundary,
+  repo-map `--check`, adr-coupling). **Honest bottom line for the owner:** there was nothing for
+  Gemini to do this run — not a quota or pipeline problem, the Drive folder simply has no new
+  videos right now. Add new videos to the same Drive folder and re-trigger to actually spend
+  quota on them.
 - **If Airflow isn't running when you resume:** it's a background process in this container, not
   guaranteed to survive a session/container restart. Restart with
   `AIRFLOW_HOME=/workspaces/creative_intelligence_lab/airflow_home` **explicitly set** — without
@@ -704,6 +762,106 @@ query against `target/dev.duckdb` after the script ran.
 **No real Meta/TikTok exports exist yet** — this proved the pipe is correct, it did not unblock
 v1.5 for real use. Still waiting on real performance data; nothing committed or persisted to S3
 Gold claims otherwise.
+
+## AWS OIDC for real `dbt build` in CI — IN PROGRESS, paused mid-flow 2026-06-27
+
+Owner decided to settle the long-open "CI only runs `dbt parse`+`seed`, never a real `dbt build`"
+gap (named since the 2026-06-25 completion plan). Walked through the security trade-off first
+(plain `pull_request` already withholds secrets from fork PRs — my first framing of that risk
+was overstated; the real remaining risk for this private solo repo is just "unreviewed PR code
+gets real S3 write access before merge" + "a long-lived static key sits in GitHub forever").
+**Owner chose OIDC role federation over a static-key GitHub secret** — no long-lived AWS
+credential is ever stored anywhere with this approach.
+
+**Confirmed I cannot do this myself:** a real `iam:ListOpenIDConnectProviders` call using the
+existing `.env` credentials (`arn:aws:iam::579880301047:user/creative-intel-pipeline`, the IAM
+user the real pipeline scripts already use) returned `AccessDenied` — that user has no IAM admin
+rights. Every step below is console-only, owner-driven; don't attempt it via boto3/CLI with the
+pipeline's own credentials again, it will hit the same wall.
+
+**Real values to use (no need to re-derive — got these via a real, read-only `aws sts
+get-caller-identity` + `git remote -v` this session):**
+- AWS Account ID: `579880301047`
+- GitHub repo: `rajeluqman/creative_intelligence_lab` (org `rajeluqman`, repo
+  `creative_intelligence_lab`)
+- S3 bucket: `creative-intel-lake`
+- New dedicated role name (in progress): **`creative-intel-ci-role`** — deliberately NOT reusing
+  the existing `creative-intel-pipeline` IAM user or its policy (mirrors the project's established
+  "dedicated, not reused" pattern from the Snowflake `CREATIVE_INTEL_ROLE` setup).
+
+**Progress — confirm current state before continuing, don't assume:**
+- ✅ **Part A done:** OIDC identity provider for `token.actions.githubusercontent.com`
+  (audience `sts.amazonaws.com`) added in IAM → Identity providers. AWS's current console build
+  has no manual thumbprint field anymore (auto-verifies the provider's cert chain) — if a future
+  session sees instructions mentioning a thumbprint, that's stale, ignore it.
+- 🟡 **Part B started, NOT confirmed finished:** creating the role via IAM → Roles → Create role →
+  Web identity → provider `token.actions.githubusercontent.com` → audience `sts.amazonaws.com`.
+  AWS's console has a native GitHub-specific sub-form here (organization / repository / branch
+  fields) that auto-builds the trust-policy condition — owner was filling it in with
+  **organization=`rajeluqman`, repository=`creative_intelligence_lab`, branch=`main`** (the
+  branch restriction is what keeps PR branches from ever assuming this role — only a run on
+  `main`, i.e. after merge, can). Was told to skip attaching a permissions policy at this step
+  (Part C does that separately), name the role `creative-intel-ci-role`, and create it. **Resume
+  action: ask the owner to confirm the role now exists (check IAM → Roles, or have them paste the
+  role ARN) before doing anything else — do not assume Part B completed.**
+- ⬜ **Part C, not started — exact JSON ready to paste, inline policy on the new role:**
+  least-privilege — read-only on Bronze, read+write on Silver/Gold only (CI building Gold must
+  never be able to touch Landing/Bronze, only the real ingestion/extraction scripts write those):
+  ```json
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "ListRelevantPrefixesOnly",
+        "Effect": "Allow",
+        "Action": "s3:ListBucket",
+        "Resource": "arn:aws:s3:::creative-intel-lake",
+        "Condition": { "StringLike": { "s3:prefix": ["bronze/*", "silver/*", "gold/*"] } }
+      },
+      {
+        "Sid": "ReadBronzeOnly",
+        "Effect": "Allow",
+        "Action": "s3:GetObject",
+        "Resource": "arn:aws:s3:::creative-intel-lake/bronze/*"
+      },
+      {
+        "Sid": "ReadWriteSilverGold",
+        "Effect": "Allow",
+        "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        "Resource": [
+          "arn:aws:s3:::creative-intel-lake/silver/*",
+          "arn:aws:s3:::creative-intel-lake/gold/*"
+        ]
+      }
+    ]
+  }
+  ```
+  Name it `creative-intel-ci-policy`, attach to `creative-intel-ci-role` as an inline policy.
+- ✅ **Part D DONE 2026-06-27 — `ci.yml` wired.** Owner confirmed Parts B/C complete and handed
+  over the real role ARN (`arn:aws:iam::579880301047:role/creative-intel-ci-role`, all
+  roles/policy/trust-relationship/permissions built directly in the AWS console — **could not be
+  independently re-verified via API**: the `creative-intel-pipeline` IAM user the scripts use has
+  no `iam:GetRole`/`iam:ListRolePolicies` rights, confirmed by a real `AccessDenied` on both this
+  session, same wall as Part B's earlier `ListOpenIDConnectProviders` denial — taken on the
+  owner's word, same trust posture as the console-only Snowflake steps). New `real-build` job
+  added to `.github/workflows/ci.yml`, `needs: static-gates`, gated `if: github.event_name ==
+  'push'` (never `pull_request`), `permissions: {id-token: write, contents: read}`,
+  `aws-actions/configure-aws-credentials@v4` → role-to-assume the ARN above → real
+  `dbt build -s +marts.core` against the checked-in `profiles.yml` (`S3_BUCKET=creative-intel-lake`,
+  `CLIENT_ID=voltecx`, region `ap-southeast-1` matching `.env`). Decision formalized as
+  **`architecture/ADR-013-aws-oidc-ci-federation.md`** (new — this wasn't in any prior ADR, so it
+  got its own, not an addendum). **Verified for real, not just written:** YAML parses clean
+  (`yaml.safe_load`, job graph + `if`/`permissions`/step list all confirmed); full governance
+  sweep clean — `ruff`, `doc_reference_contract.py` (both the new ADR alone and the full 26-doc
+  set), its self-test, lineage, boundary, `adr_coupling_contract.py` (11 structural changes since
+  `origin/main`, ADR touched — OK) + its self-test, `gen_repo_map.py --check` (126 files, was 125
+  — the new ADR; regenerated then re-checked clean). Also fixed in the same pass: `CLAUDE.md`'s
+  "Architecture of Record" ADR list was stale at ADR-008 (pre-existing gap, same class as the
+  2026-06-25 ADR-006/007 one) — now lists through ADR-013. **Not yet done — cannot be done from
+  here:** an actual live push-to-main run of `real-build` to prove the OIDC handshake itself
+  works end-to-end (this repo only has push access to a feature branch in this session; the job
+  is correct-by-inspection and gate-clean, not yet exercised by a real GitHub Actions run). Whoever
+  merges to `main` next should watch the Actions tab for the first `real-build` run.
 
 ## Next step when resuming (v1 path — build feature store FIRST, serve AFTER it has rows)
 

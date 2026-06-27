@@ -42,9 +42,14 @@ BI tool against these tables must quote column names.
    embedding surface, zero Cortex AI functions, works against an external table because it's a
    plain view+query, not a Dynamic Table.
 
-Still open (not this script's job — see PROJECT_STATUS.md item 3 "Still not built"): a checked-in
-automated row-count+key reconciliation test; COST_LOG.md; wiring Airflow's refresh_serving to an
-ALTER EXTERNAL TABLE ... REFRESH call.
+5. refresh — ALTER EXTERNAL TABLE ... REFRESH per Gold model + a CREATE OR REPLACE VIEW resync
+   of FACT_CHUNK_VECTOR. Distinct from `tables`/`search` above: those CREATE the objects
+   (idempotent IF-NOT-EXISTS / always-fresh-OR-REPLACE); this phase only refreshes already-
+   created ones against whatever is newest on S3 — the thing Airflow's refresh_serving task
+   calls after every dbt_build_marts run (dags/creative_intel_pipeline.py). The reconciliation
+   check that should follow a refresh lives separately in tests/reconcile_snowflake_serving.py
+   (this script provisions/refreshes; that one verifies — kept as two files on purpose, same
+   separation as `dbt build` vs. a test suite).
 
 Usage:
     python scripts/provision_snowflake_serving.py                       # dry-run, all phases
@@ -52,6 +57,7 @@ Usage:
     python scripts/provision_snowflake_serving.py --phase storage --apply
     python scripts/provision_snowflake_serving.py --phase tables --apply
     python scripts/provision_snowflake_serving.py --phase search --apply
+    python scripts/provision_snowflake_serving.py --phase refresh --apply
 """
 from __future__ import annotations
 
@@ -173,11 +179,29 @@ def search_statements(cfg: dict) -> list[str]:
     ]
 
 
+def refresh_statements(cfg: dict) -> list[str]:
+    # ALTER EXTERNAL TABLE ... REFRESH per Gold model, then resync the FACT_CHUNK_VECTOR view by
+    # reusing search_statements' own CREATE OR REPLACE VIEW / GRANT SQL (no duplicated view DDL
+    # to drift out of sync with the `search` phase above).
+    stmts = [
+        f"USE ROLE {cfg['bootstrap_role']};",
+        f"USE DATABASE {cfg['database']};",
+    ]
+    for model in GOLD_MODELS:
+        stmts.append(f"ALTER EXTERNAL TABLE PUBLIC.{model.upper()} REFRESH;")
+    stmts += [
+        s for s in search_statements(cfg)
+        if s.startswith(("CREATE OR REPLACE VIEW", "GRANT SELECT ON VIEW"))
+    ]
+    return stmts
+
+
 PHASES = {
     "account": account_statements,
     "storage": storage_statements,
     "tables": table_statements,
     "search": search_statements,
+    "refresh": refresh_statements,
 }
 
 

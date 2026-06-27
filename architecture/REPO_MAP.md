@@ -11,7 +11,7 @@
 >
 > Not mapped (by design): `.github/`, lockfiles, `*.example`, secret templates, settings.
 
-**124 files mapped.**
+**126 files mapped.**
 
 ## Architecture Decision Records
 
@@ -29,6 +29,7 @@
 | `architecture/ADR-010-repo-map-and-adr-coupling-gates.md` | ADR-010 — Navigation index (REPO_MAP) + ADR-coupling gate | — | — |
 | `architecture/ADR-011-conversational-language-protocol.md` | ADR-011 — Conversational language protocol (Malaysian Technical Manglish for narration) | — | — |
 | `architecture/ADR-012-token-efficiency-and-session-discipline.md` | ADR-012 — Token-efficiency & session-discipline operating protocol | — | — |
+| `architecture/ADR-013-aws-oidc-ci-federation.md` | ADR-013 — AWS OIDC role federation for real dbt build in CI | — | — |
 
 ## Architecture docs (record)
 
@@ -108,7 +109,7 @@
 | File | Purpose | Uses | Used by |
 |------|---------|------|---------|
 | `scripts/enforce_landing_ttl.py` | Landing TTL guarded delete — hard-delete aged non-golden videos (ADR-007). | env_guard.py | — |
-| `scripts/env_guard.py` | Fail-closed env guard (mirror of pharma gym_guard). Import + call assert_safe() in any | — | enforce_landing_ttl.py, generate_embeddings.py, ingest_drive_to_s3.py, list_unextracted_assets.py, run_gemini_extract.py |
+| `scripts/env_guard.py` | Fail-closed env guard (mirror of pharma gym_guard). Import + call assert_safe() in any | — | enforce_landing_ttl.py, generate_embeddings.py, ingest_drive_to_s3.py, list_unextracted_assets.py, reconcile_snowflake_serving.py, run_gemini_extract.py |
 | `scripts/gen_repo_map.py` | Repo-map generator — the NAVIGATION half of the ANTI-SHORTCUT PROTOCOL (see CLAUDE.md). | — | — |
 | `scripts/generate_embeddings.py` | Silver chunk text -> Gemini embeddings -> gold/chunk_embedding (BYO, content-hash-gated). | env_guard.py | — |
 | `scripts/ingest_drive_to_s3.py` | Drive -> S3 landing. Tenant-scoped content-hash naming, skip-existing (idempotent). | env_guard.py | run_gemini_extract.py |
@@ -139,6 +140,7 @@
 | `tests/golden/fixture_data.py` | Golden-dataset fixture: one frozen Gemini-shaped Bronze response + its hand-verified answer key. | — | run_golden_test.py |
 | `tests/golden/run_golden_test.py` | Golden-dataset test — proves fact_chunk computes the RIGHT values, not just valid-shaped ones. | fixture_data.py | — |
 | `tests/lineage_contract.py` | Lineage & data-fidelity contract — deterministic gate over the landing manifest. | — | — |
+| `tests/reconcile_snowflake_serving.py` | Snowflake serving reconciliation gate (ADR-005 spine). | env_guard.py | — |
 | `tests/test_adr_coupling_contract.py` | Self-test for adr_coupling_contract.py — the gate is itself tested (house pattern). | adr_coupling_contract.py | — |
 | `tests/test_doc_reference_contract.py` | Self-test for tests/doc_reference_contract.py — proves the gate actually fires. | doc_reference_contract.py | — |
 
@@ -215,7 +217,7 @@
 | File | Purpose | Uses | Used by |
 |------|---------|------|---------|
 | `AGENT_ROSTER_RECOMMENDATION.md` | AGENT ROSTER RECOMMENDATION — Creative Intelligence Pipeline | — | — |
-| `BACKLOG.md` | BACKLOG — Creative Intelligence Pipeline (post-v1) | — | — |
+| `BACKLOG.md` | BACKLOG — Creative Intelligence Pipeline (rejected / closed items, historical record) | — | — |
 | `CLAUDE.md` | Creative Intelligence Pipeline — AI Context | — | — |
 | `PROJECT_STATUS.md` | PROJECT STATUS — Creative Intelligence Pipeline | — | — |
 | `README.md` | Creative Intelligence Pipeline — Cabinet Convene (Side Project) | — | — |

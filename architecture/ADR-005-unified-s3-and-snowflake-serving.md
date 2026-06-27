@@ -308,3 +308,47 @@ functions:**
   same always-fresh-resync rationale as the cache table it replaces) + `GRANT SELECT` to
   `CREATIVE_INTEL_ROLE`, instead of the Cortex Search Service + cache-table statements.
 **Verified for real:** see PROJECT_STATUS.md for the live query run and result evidence.
+
+## Addendum (2026-06-27 #5) — last three "Still open" items closed: reconciliation test, COST_LOG.md, refresh_serving wiring
+
+Addendum #4 above named three items still open after the native-`VECTOR` build. All three close
+in this addendum, no new architecture decision beyond what #1–#4 already ratified:
+
+1. **Checked-in, automated row-count+key reconciliation test** — `tests/reconcile_snowflake_serving.py`
+   (new). Replaces 2026-06-27's manual one-off query with a re-runnable script: for each of the 8
+   Gold models, reads the SAME S3 parquet two ways — DuckDB httpfs (ground truth) and the
+   Snowflake external table via `CREATIVE_INTEL_ROLE` — and exact-matches both row **count** and
+   the **key-column multiset** (`collections.Counter`, not a set, so a duplicate on either side is
+   caught rather than dedup'd away). Both reads are deliberately "raw" (no dbt logical-view
+   null-filter), so the two known `where 1=0` stubs (`bridge_asset_lineage`, `fact_extraction_run`)
+   reconcile as 1/1 phantom-null rows on both sides, not a false-positive (same convention named in
+   Addendum 2026-06-25 #2). NOT a CI gate — needs live AWS+Snowflake credentials, which `ci.yml`'s
+   own header forbids ($0/no-cloud/no-secrets); registered in `tests/GATES.md` as a manual/Airflow
+   gate instead. Added as a row there in this same change (adr-coupling discipline).
+2. **`COST_LOG.md`** — created at repo root (gitignored per CLAUDE.md "What NOT To Commit" /
+   `.gitignore`, a monitoring artifact, not a build output). Records the 2026-06-27 account/object
+   creation dates and the now-abandoned Cortex Search Service attempt + cleanup, honestly flagging
+   that the underlying **trial's own start date** is unverified from this repo (the account is
+   shared with `pharma_novartis_sttm`, created before this project touched it).
+3. **Airflow `refresh_serving` wired to real Snowflake calls** — `dags/creative_intel_pipeline.py`'s
+   `refresh_serving` task, for `SERVING_BACKEND=snowflake_cortex` only (the default `duckdb_vss`
+   path stays the honest no-op it always was — no separate index file exists to refresh). Shells
+   out cross-venv (ADR-008's existing boundary, no new pattern) to (a) `scripts/provision_snowflake_serving.py`
+   's new `refresh` phase (run as `--phase refresh --apply`):
+   `ALTER EXTERNAL TABLE ... REFRESH` on all 8 Gold tables + a `CREATE OR REPLACE VIEW`
+   resync of `FACT_CHUNK_VECTOR` (reuses `search_statements`' own view SQL, no duplicated DDL to
+   drift), then (b) `tests/reconcile_snowflake_serving.py` from item 1 — a reconciliation mismatch
+   raises and fails the Airflow task loud, the live trip-wire for this ADR's own veto line.
+
+**FinOps preconditions (Cost discipline items 1–4) are now ALL satisfied**, closing the gate
+ADR-008 named for why `refresh_serving`'s `snowflake_cortex` branch stayed a no-op until now:
+(1) `COST_LOG.md` exists, (2) the $0 DuckDB-VSS fallback was proven first (2026-06-25), (3)
+embeddings stay single-sourced BYO-Gemini throughout (§B, restored by Addendum #4), (4) the only
+candidate for an idle always-billing object (the managed Cortex Search Service) was abandoned and
+its orphaned cache table dropped — nothing idle is left running.
+
+**Verified for real:** see PROJECT_STATUS.md's "Snowflake Cortex serving" item 3 for the dry-run
+evidence and governance-gate re-run; a live `--apply` of the new `refresh` phase + a live run of
+the reconciliation script against the real account were deferred pending owner confirmation
+(ADR-005's own "provisioning stays owner-gated" line — `CREATE OR REPLACE VIEW` inside `refresh`
+is still a CREATE statement, even though `ALTER ... REFRESH` itself is not).

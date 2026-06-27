@@ -1,8 +1,9 @@
-# BACKLOG — Creative Intelligence Pipeline (post-v1)
+# BACKLOG — Creative Intelligence Pipeline (rejected / closed items, historical record)
 
-> Items deferred out of v1 scope. Nothing here is built until v1 (the queryable creative
-> feature store) ships and is demo-able. See `AGENT_ROSTER_RECOMMENDATION.md` + CLAUDE.md
-> "v1 Scope (LOCKED)".
+> v1 (the queryable creative feature store) is the **entire, permanent** scope of this project
+> (owner decision 2026-06-27) — there is no future build queue anymore. This file is now a
+> closed record of what was considered and rejected, not a to-do list. See
+> `AGENT_ROSTER_RECOMMENDATION.md` + CLAUDE.md "v1 Scope (LOCKED)".
 
 ## Gym apparatus port — DEFERRED / PARTLY REJECTED (cabinet convene 2026-06-22)
 
@@ -31,10 +32,20 @@ real `file:line`); a phase/layer is split into its own `0N_*.md` file only at **
 no per-card review ritual. The pharma `INCUBATOR.md` drill-loop reference in the troubleshooting
 index is now explicitly relabelled **REJECTED** (was "optional"), per Tier 2/3 above.
 
-## Other v2 items (from CLAUDE.md "v1 Scope OUT")
+## Other "v2" items — REJECTED 2026-06-27 (owner decision, not deferred anymore)
+
+These were originally framed as "v2 BACKLOG" — implying a possible future build. **Owner
+decision 2026-06-27: this project is solely the data pipeline (the queryable creative feature
+store). There is no v2 app horizon.** Kept named here (not deleted) per this project's own
+Clean-ERD convention — "what's deliberately OUT stays named" — so a future reader sees these
+were considered and rejected, not forgotten:
 - AI creative search engine (app on top of the feature store)
 - RAG script/brief generator
 - Creative-ops analytics dashboard
 - Automated tagging / asset archiving
-- ROAS / ad-performance ingestion beyond the within-winners correlation layer
-- Dedicated vector DB (DuckDB VSS covers v1.5 semantic search)
+- ROAS / ad-performance **live-connector ingestion** (note: the v1.5 performance *marts* that
+  consume a hand-supplied export are NOT rejected — they're core pipeline, just waiting on real
+  data; only the "build a maintained Meta/TikTok API integration" piece is rejected)
+- Dedicated vector DB (DuckDB VSS / Snowflake native `VECTOR` already cover semantic search at
+  this data volume — building a separately-hosted vector DB here would be over-engineering, not
+  a missing feature)

@@ -26,9 +26,11 @@ google-genai, it only invokes the already-verified-for-real CLI scripts as subpr
 keeps the two dependency sets fully isolated and means wiring this DAG could never regress the
 real, already-tested pipeline scripts' own dependencies.
 
-Bodies are now wired to the real scripts (was: TODO stubs). `ge_validate` and `refresh_serving`
-are honest partial-no-ops where the thing they'd call doesn't exist yet — see their docstrings
-and tests/GATES.md "Open" section; this DAG does not fabricate behavior for unbuilt gates.
+Bodies are now wired to the real scripts (was: TODO stubs). `ge_validate` remains an honest
+partial-no-op (a literal GE checkpoint doesn't exist yet — tests/GATES.md "Open" section).
+`refresh_serving` is real for `SERVING_BACKEND=snowflake_cortex` (ADR-005 Addendum 2026-06-27
+#5) and stays an honest no-op for the default `duckdb_vss` backend, which has no separate index
+file to refresh. This DAG does not fabricate behavior for unbuilt gates.
 Verify: `python -c "from airflow.models import DagBag; \
 assert not DagBag('dags').import_errors, DagBag('dags').import_errors"`.
 
@@ -79,7 +81,14 @@ def _load_dotenv() -> dict[str, str]:
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, val = line.partition("=")
-            values[key.strip()] = val.strip()
+            # bash's `source .env` (the documented manual-run path, e.g. `set -a && source .env`)
+            # treats an unquoted ' #' mid-line as a comment start too — .env/.env.example rely on
+            # that (`GOOGLE_APPLICATION_CREDENTIALS=path   # explanation`). Found live 2026-06-27:
+            # without this, this hand-rolled parser fed the literal " # explanation" suffix into
+            # the subprocess env, and `service_account.Credentials.from_service_account_file`
+            # FileNotFoundError'd on the resulting bogus path.
+            val = re.split(r"\s+#", val.strip(), maxsplit=1)[0].strip()
+            values[key.strip()] = val
     return values
 
 
@@ -253,19 +262,30 @@ def creative_intel_pipeline():
         """Step N — refresh the read-only serving veneer over the freshly-built Gold S3 (ADR-005).
 
         Gold S3 is the sole source of truth; this only refreshes the projection on top.
-        Honest no-op for both backends today (was: TODO fabricating a refresh call):
-          * duckdb_vss (default, $0) — no embedding/VSS pipeline exists yet (SPEC_v1_search.md
-            §1 rules vector search OUT of v1, v1.5 fast-follow, not yet built). v1's actual
-            serving surface is target/dev.duckdb itself, already refreshed by dbt_build_marts
-            above — there is no separate veneer to rebuild yet.
-          * snowflake_cortex — ADR-005's FinOps preconditions (COST_LOG + day-25 teardown +
-            $0 fallback proven + single-sourced embeddings) are not yet satisfied; this task
-            deliberately does not issue a live Snowflake call until they are.
+          * duckdb_vss (default, $0) — still an honest no-op: no separate VSS index file exists
+            to refresh (SPEC_v1_search.md §1's `--semantic` builds an ephemeral in-memory HNSW
+            index per query). v1's actual serving surface is target/dev.duckdb itself, already
+            refreshed by dbt_build_marts above.
+          * snowflake_cortex — REAL as of ADR-005 Addendum 2026-06-27 #5: all four FinOps
+            preconditions are now met (COST_LOG.md monitoring practice in place, day-25 teardown
+            lifted, $0 fallback proven 2026-06-25, embeddings stay single-sourced/BYO-Gemini).
+            Shells out to `venv/bin/python` (ADR-008 cross-venv boundary — venv_airflow never
+            imports snowflake-connector/duckdb directly): first
+            `scripts/provision_snowflake_serving.py --phase refresh --apply` (ALTER EXTERNAL
+            TABLE ... REFRESH on all 8 Gold tables + FACT_CHUNK_VECTOR view resync), then
+            `tests/reconcile_snowflake_serving.py` (row-count + key-set reconciliation against
+            real Gold S3). A reconciliation mismatch raises here, failing the task loud — the
+            live trip-wire for ADR-005's own veto line ("re-fires if Snowflake becomes a second
+            source of truth").
         """
         backend = os.getenv("SERVING_BACKEND", "duckdb_vss")
         if backend == "duckdb_vss":
-            return "no-op (duckdb_vss: no VSS index exists yet, v1.5 fast-follow — v1 serving = target/dev.duckdb, already refreshed by dbt_build_marts)"
-        return "no-op (snowflake_cortex: ADR-005 FinOps preconditions not yet satisfied)"
+            return "no-op (duckdb_vss: no separate VSS index to refresh — v1 serving = target/dev.duckdb, already refreshed by dbt_build_marts)"
+        out = _run_real_script(["scripts/provision_snowflake_serving.py", "--phase", "refresh", "--apply"])
+        print(out)
+        out = _run_real_script(["tests/reconcile_snowflake_serving.py"])
+        print(out)
+        return "snowflake_cortex: refreshed 8 external tables + FACT_CHUNK_VECTOR view, reconciliation OK"
 
     landed = sync_drive_to_landing()
     new_assets = list_new_assets()

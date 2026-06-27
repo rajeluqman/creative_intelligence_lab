@@ -15,3 +15,4 @@ data/
 !seeds/*.csv
 great_expectations/uncommitted/
 __pycache__/
+COST_LOG.md

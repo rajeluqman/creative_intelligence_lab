@@ -92,9 +92,13 @@ alone?) — so a marketing team can search past footage and assemble new ad scri
 **Purpose**: Data Engineering portfolio project (single-dev).
 
 ## v1 Scope (LOCKED — see @scope-guardian)
-v1 = the **queryable creative feature store** only. Explicitly OUT (v2 BACKLOG):
+v1 = the **queryable creative feature store** — and per owner decision 2026-06-27, that is the
+**entire, permanent scope of this project**. There is no v2 follow-on app horizon anymore; the
+items below are not "deferred," they are **REJECTED — will not be built here**:
 1. AI creative search engine  2. RAG script generator  3. creative-ops dashboard
-4. automated tagging/archiving. Also OUT: ROAS / ad-performance ingestion, vector DB.
+4. automated tagging/archiving. Also REJECTED: ROAS/ad-performance live-connector ingestion
+(the v1.5 performance *marts* — fed by a hand-supplied export, not a connector — stay IN),
+dedicated vector DB. Full ruling: `BACKLOG.md`.
 
 ## Stack (locked)
 | Layer | Storage | Compute / engine | Notes |
@@ -127,6 +131,11 @@ DBT_DAG.md, SPEC_v1_search.md, SPEC_v1.5_performance_marts.md; the doc-gap set a
 - ADR-006 — multi-client tenancy (`dim_client` + tenant-scoped asset identity)
 - ADR-007 — landing TTL (guarded hard-delete @ 30 days)
 - ADR-008 — Airflow orchestration wiring (isolated `venv_airflow/` + cross-venv script invocation)
+- ADR-009 — Slack failure alerts + Confluence doc sync (Addendum 2026-06-27: curated onboarding set)
+- ADR-010 — repo-map + ADR-coupling gates (the navigation/governance machinery itself)
+- ADR-011 — conversational language protocol (Manglish opt-in, rescoped by Addendum 2026-06-27)
+- ADR-012 — token-efficiency & session-discipline operating protocol
+- ADR-013 — AWS OIDC role federation for real `dbt build` in CI (push-to-main only, no static keys)
 
 **Governance gate:** @data-architect holds ULTIMATE VETO and enforces the **Clean-ERD
 Doctrine** on every model change — 1 table = 1 grain = 1 business entity · no mixed-domain

@@ -17,6 +17,7 @@ applies. A bug class that recurs without a new row is an architecture gap, not a
 | `great_expectations/expectations/bronze_asset_raw.json` (chunk_count ≥ 1, `severity: warn`) | A schema-valid-but-empty `{"chunks": []}` Gemini response silently vanishing before any Silver row exists to test (DQD.md §1 gate 1, the 5th LLM-output gate) | `dbt build` (parse-time column test on the source) | Data quality (LLM output) |
 | `great_expectations/expectations/silver_chunk.json` | Null/duplicate `chunk_id`, out-of-range `standalone_score`, null `chunk_theme`, `sentiment` outside the fixed enum | Authored; **not yet executed against real data** — only JSON-validity-checked in CI today (open item below) | Data quality |
 | `tests/golden/run_golden_test.py` | A silently-WRONG computed value that still passes every shape/range test — e.g. `standalone_score` off-by-one, a swapped `chunk_theme`/`sentiment` column, a `chunk_sequence`/`chunk_id` mismatch in the `stg_gemini_raw` unnest. The "Revenue = Sales, not Sales − Refund" class of bug | CI (`golden_test` dbt target, local fixture, $0/no-cloud) | **Logic** |
+| `tests/reconcile_snowflake_serving.py` | Snowflake becoming a second source of truth — a row-count or key-set divergence between the Snowflake external-table read and the real Gold S3 parquet it's supposed to mirror (ADR-005 spine) | Manual / Airflow `refresh_serving` task (NOT CI — needs live AWS+Snowflake credentials, contradicting `ci.yml`'s $0/no-cloud rule) | Drift / serving-veneer |
 
 ## Open (named, not yet gated)
 
