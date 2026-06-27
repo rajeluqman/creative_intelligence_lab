@@ -1,9 +1,11 @@
 # Incident Postmortem
 
 > ## 🚧 STATUS: STUB — no real incident yet
-> **This page is intentionally empty.** This project hasn't shipped to live serving yet (Snowflake
-> Cortex is unbuilt; DuckDB VSS is the only live search path, internal-use only) — there has been
-> **no production incident** to write up. Per this project's own no-fabrication convention
+> **This page is intentionally empty.** Snowflake serving and DuckDB VSS are both built and
+> verified live now (see **Architecture Decisions** + **Known Issues**), but neither is on an
+> unattended/automated trigger yet (Airflow's `refresh_serving` is owner-run, not scheduled) — so
+> there has still been **no production incident** to write up, only build-time bugs (see
+> **Runbook**). Per this project's own no-fabrication convention
 > (`tests/doc_reference_contract.py`'s philosophy, the troubleshooting cheatsheet's authoring rule:
 > "no fabricated incidents, no invented citations"), this page will not be pre-filled with a
 > hypothetical postmortem.

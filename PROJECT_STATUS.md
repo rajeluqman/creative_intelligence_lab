@@ -8,7 +8,32 @@
 > evidence you actually need.
 
 - **Paste-ready first prompt for next session:**
-  `Read PROJECT_STATUS "▶ RESUME HERE" and do the next step. Don't re-read the whole repo — open only the files named here, fresh.`
+  `Read PROJECT_STATUS "▶ RESUME HERE". Product (v1/v1.5) has no open thread — gates green. The live thread is the TRAINING GYM inside the RBC SIMULATION LAB (simulation/). The pedagogy framework + 2 worked drills were built 2026-06-27 (Opus, Option 1). I want to either (a) RUN drill simulation/drills/T-L01_dup_pk.md or O-O01_full_scan.md with @cikgu as mentor — read simulation/CIKGU_DRILL_PROTOCOL.md + simulation/PEDAGOGY_PREFS.md FIRST, teach mental-model→ETL→bug→debug→syntax-LAST, gated answers in simulation/.solutions/ (do NOT reveal until I hypothesize); or (b) hand off to a Sonnet session to mass-produce drills T-L02..L10 + O-O02..O06 from the 2 templates via simulation/SONNET_KICKOFF_PROMPT.md. Run python simulation/check_isolation.py first.`
+- **TRAINING GYM — BUILT 2026-06-27 (Opus, Option 1), ready to train:**
+  imported pharma_novartis_sttm's gym *pedagogy* into this repo's DuckDB stack (NO Spark, no stack
+  change). New in `simulation/`: PEDAGOGY_PREFS.md (owner's proven learning formula =
+  mental-model→ETL→prod-bug→debug→syntax-LAST; see memory `learning-style-formula`),
+  LADDERS.md (Troubleshoot T-L01→L10 + Optimize O-O01→O06, each mapped to a fault id + RBC task +
+  resume bullet), CARD_FORMAT.md (⚠️ Junior-mistake + 🎤 Soundbite fields), CIKGU_DRILL_PROTOCOL.md
+  (mentor loop: gated-answer reveal, H0→H3 hints, methodology grading), HINT_LOG.md, and 2 worked
+  drills (`drills/T-L01_dup_pk.md`, `drills/O-O01_full_scan.md`) with gated solutions in
+  `.solutions/` — both self-contained inline DuckDB, runnable NOW before inject.py is built.
+  Feedback loop is live: owner flags a liked style → append rule to PEDAGOGY_PREFS.md + save memory
+  → future drills inherit it. `check_isolation.py` PASS. **Next:** run a drill, OR Sonnet-execute
+  the remaining 14 drills + the inject.py mutate fns.
+- **RBC simulation lab — FRAMEWORK BUILT 2026-06-27 (Opus), awaiting Sonnet execution:**
+  isolated `simulation/` practice env for the RBC interview (mature enterprise: ~2,500 pipelines,
+  Teradata/AWS→Databricks/Snowflake, migration+maintenance heavy). Framework done + both gates green
+  (`check_isolation.py` PASS, `boundary_contract.py` PASS). Execution (dbt models, fault code,
+  reconcile logic) is deferred to a Sonnet session. Full detail: "RBC simulation lab" section below.
+- **Confluence brought current + pushed live, 2026-06-27 (same session as the items below):**
+  fixed several pages that had gone stale relative to this session's Snowflake/CI work (Known
+  Issues + Architecture Decisions both still said Cortex Search/CI-build things that were no
+  longer true), filled in the Runbook for real from already-documented incidents (its own stub
+  gate cleared), and added a 9th page — **Deployment Guide** — for the AWS-OIDC + Snowflake-
+  provisioning mechanics that had no single onboarding page before. Pushed live for real (not
+  dry-run): 7 pages created, 17 updated by title, zero duplicates. Full detail: "Confluence
+  updated + pushed live" section below.
 - **Current state (1 line):** v1 + v1.5 built and verified for real (19/19 assets, 169 chunks,
   Silver/Gold on S3, perf marts smoke-tested+reverted); Snowflake serving live (2026-06-27) —
   storage integration + 8 external tables over real Gold S3 (row-for-row reconciled via
@@ -20,7 +45,12 @@
   three open sub-items closed same day** (ADR-005 Addendum 2026-06-27 #5) — see immediately below.
   **CI now runs a real `dbt build` against real S3 on every push to `main`** via AWS OIDC role
   federation (ADR-013) — built, pushed to `main`, and proven green on a real Actions run (not
-  just gate-clean) — see "AWS OIDC for real `dbt build` in CI" below.
+  just gate-clean) — see "AWS OIDC for real `dbt build` in CI" below. **Owner signed off same
+  day** on the one remaining open thread (live `--phase refresh --apply` +
+  `reconcile_snowflake_serving.py` against the real account) — see "Snowflake refresh +
+  reconciliation — RUN LIVE FOR REAL" below. **Nothing left open from the master completion
+  plan** — only the two owner-deferred design calls remain (Airflow `@daily`, `chunk_theme`
+  vocab-drift), neither with a default-without-asking answer.
 - **Cortex Search Service was tried and is a dead end on this account — don't re-attempt it.**
   Three real, successive blockers (BYO-embedding conflict → Dynamic Tables reject external tables
   → trial-tier accounts can't run the AI function it needs at all) — full account-tier wall, not
@@ -42,11 +72,9 @@
   (`missing required env var(s): SNOWFLAKE_PASSWORD - refusing to run`), mirroring `env_guard.py`'s
   convention; `airflow dags list-import-errors` clean after the DAG edit; full governance-gate
   sweep clean (ruff, lineage, boundary, doc-reference incl. self-test, repo-map `--check`,
-  adr-coupling incl. self-test, golden test). **Not yet done — needs owner confirmation before
-  executing for real** (ADR-005: "provisioning stays owner-gated" — `CREATE OR REPLACE VIEW`
-  inside the new `refresh` phase is still a CREATE statement): an actual live `--apply` of
-  `--phase refresh` and a live run of `reconcile_snowflake_serving.py` against the real account.
-  Full detail: ADR-005 Addendum (2026-06-27 #5).
+  adr-coupling incl. self-test, golden test). **The owner-gated live step is now DONE too, same
+  day** — see "Snowflake refresh + reconciliation — RUN LIVE FOR REAL" below. Full detail:
+  ADR-005 Addendum (2026-06-27 #5).
 - **AWS OIDC for real `dbt build` in CI — FULLY CLOSED 2026-06-27, proven live, not just
   written.** All 4 parts done (ADR-013 + dated section below for full evidence): owner built
   Parts A–C in the AWS console (OIDC provider, `creative-intel-ci-role`, trust policy,
@@ -60,10 +88,12 @@
   locally first, re-pushed to `main` — **second run fully green, both jobs.** Commits
   `bdce629` (wiring) + `f51e7a9` (the seed fix), both on `main` and
   `docs/cabinet-doc-gap-closure`, in sync with `origin`. **Nothing left open on this thread.**
-- **Next concrete step — ONE open thread left in the whole project:** owner sign-off to run the
-  Snowflake `refresh` phase + `reconcile_snowflake_serving.py` live against the real account
-  (named open since before this session, still open — see item 3 above). Separately untouched,
-  no default-without-asking answer for either: Airflow `@daily`, `chunk_theme` vocab-drift design.
+- **Next concrete step — the one open thread is now CLOSED (2026-06-27, this session).** Owner
+  signed off; live `--phase refresh --apply` + a live `reconcile_snowflake_serving.py` run both
+  executed against the real account — exact-match on all 8 models. See "Snowflake refresh +
+  reconciliation — RUN LIVE FOR REAL" below for full evidence. **Nothing left open in the master
+  completion plan.** Separately untouched, no default-without-asking answer for either: Airflow
+  `@daily`, `chunk_theme` vocab-drift design — pick these up only if the owner raises them.
 - **Scope decision, 2026-06-27 (same session) — v2 BACKLOG permanently REJECTED, not deferred.**
   Owner: "this project is solely the data pipeline, full stop." `CLAUDE.md`'s "v1 Scope (LOCKED)"
   and `BACKLOG.md` both rewritten — the 4 downstream apps (search-engine UI, RAG generator,
@@ -113,6 +143,37 @@
 - **Gate to run before declaring any step done:** `python tests/doc_reference_contract.py <doc>` +
   `python tests/lineage_contract.py` + `python tests/boundary_contract.py` + `python scripts/gen_repo_map.py --check`.
 - **Session discipline:** watch the Claude Context Bar — red (>75%) = checkpoint here + start fresh.
+
+## RBC simulation lab — FRAMEWORK BUILT 2026-06-27 (Opus), Sonnet executes next
+**What & why.** Owner is interviewing at **RBC** (mature enterprise: ~2,500 pipelines, 1–2 new/mo,
+**Teradata+AWS legacy → Databricks+Snowflake** target → day-to-day is ~80–90% migration+maintenance,
+not greenfield). Built `simulation/` — a **self-contained, isolated** practice env to generate real
+artifacts + STAR stories and to **deliberately break/slow** for troubleshoot+optimize drills, *without
+touching `main`*. **NOT v1 product scope** (no scope-guardian conflict — it's out-of-product, in its
+own sandbox).
+
+**Model routing (ADR-012):** Opus designed the whole framework this session; **Sonnet executes** via
+`simulation/SONNET_KICKOFF_PROMPT.md`. Build order: Sim #1 baseline → #4 reconcile → faults → #3/#5 → #2.
+
+**Structure (17 files):**
+- `00_MASTER_PLAN.md` · `ISOLATION_CONTRACT.md` · `check_isolation.py` (R1 own `s3://creative-intel-staging/sim/`
+  prefix · R2 own dbt project `sim_creative_intel` · R3 no `ref()` to real models — run before every session+commit).
+- `specs/01–05` = the 5 tracks (migration dry-run, PySpark parity, incident E2E, value-reconciliation,
+  optimization lab) — each a step-by-step Sonnet script with a real gate as Definition of Done.
+  `specs/06` = 100 RBC tasks tagged ✅/⚠️/❌ · `specs/07` = STAR cheat-sheet + 3 soundbites.
+- `faults/` = the **rejected `@bottleneck-saboteur`** reincarnated as a TOOL (not a roster agent) —
+  inject/reset library, 12 named reversible faults (DQ/reconciliation/availability/performance).
+- `sim_dbt/` = isolated dbt project (duckdb, `sim` target) · `spark/` = Sim #2 (pyspark confined here).
+
+**Governance calls made (flagged, not silent):** (1) saboteur = tool, `.claude/agents/` untouched;
+(2) sim drill cards stay in `simulation/runbook/`, NEVER promoted to real `cheatsheets/` (no-fabrication
+gate); (3) `pyspark` confined to `simulation/spark/requirements.txt` so `boundary_contract.py` stays green.
+
+**Verified this session:** `python simulation/check_isolation.py` → PASS · `python tests/boundary_contract.py`
+→ PASS. (Guard caught + I fixed two of my own bugs mid-build — `/sim` vs `/sim/` edge + a forbidden
+`s3://` literal in a comment.) Code (dbt models, fault fns, reconcile logic) is **stubbed/skeleton —
+Sonnet implements**. Honesty note for interview: it's a *simulation* (synthetic data, injected faults);
+the real non-simulated story stays the Cortex→VECTOR→DuckDB rollback (ADR-005).
 
 ## Where we are
 **Full real end-to-end run complete, 2026-06-24** (started 2026-06-22, real client, real Drive
@@ -894,6 +955,81 @@ the exact failure and the fix locally first (deleted `target/dev.duckdb`, fresh 
 (doc-reference, repo-map `--check`) after the `ci.yml` edit. Pushed the fix to `main`; rerun
 pending confirmation in the Actions tab.
 
+## Snowflake refresh + reconciliation — RUN LIVE FOR REAL, 2026-06-27 (the last open thread, now closed)
+ADR-005 Addendum #5 built `provision_snowflake_serving.py --phase refresh` and
+`tests/reconcile_snowflake_serving.py` but left the actual live execution owner-gated (`CREATE OR
+REPLACE VIEW` inside `refresh` is still a CREATE statement). Owner gave explicit sign-off this
+session to run both live against the real (Novartis-shared-trial) account.
+
+**Real commands run, in order, against the real account (not a dry-run):**
+1. `python scripts/provision_snowflake_serving.py --phase refresh` (dry-run first, sanity check) —
+   reproduced the exact 8 `ALTER EXTERNAL TABLE ... REFRESH` statements + the `FACT_CHUNK_VECTOR`
+   `CREATE OR REPLACE VIEW`/`GRANT` resync named in the Addendum, byte-for-byte.
+2. `python scripts/provision_snowflake_serving.py --phase refresh --apply` — connected for real,
+   executed all 8 `REFRESH` statements + the view resync. No errors.
+3. `python tests/reconcile_snowflake_serving.py` — real DuckDB-httpfs read of Gold S3 vs. real
+   Snowflake read (via `CREATIVE_INTEL_ROLE`, not `ACCOUNTADMIN`) on all 8 models.
+
+**Result: exact match on every model, row count + key-set (not just count):** `dim_asset` 19,
+`fact_chunk` 169, `fact_extraction_run` 1, `bridge_asset_lineage` 1, `bridge_chunk_compatibility`
+363, `dim_keyword_bridge` 924, `dim_theme_bridge` 169, `chunk_embedding` 169 — all 8 print
+`✓ ... key set matches`; script exits with `✅ reconciliation OK`. The two `where 1=0` stubs
+reconciled 1/1 exactly as the script's own docstring predicted (the documented phantom-null-row
+behavior, not a new finding).
+
+**This closes the one open thread named at the top of this file since before this session.**
+Nothing from the master completion plan (see "Next step when resuming" below) remains open;
+Airflow `@daily` and `chunk_theme` vocab-drift design stay genuinely untouched, owner-deferred —
+not silently decided here.
+
+## Confluence updated + pushed live, 2026-06-27 (same session)
+Brought the published Confluence space up to date with this session's real work (Snowflake live
+serving + reconciliation, AWS OIDC CI), fixed several pages that had gone stale since the
+2026-06-27 04:45 restructuring (e348c96) — that commit wrote the 8-page taxonomy but its own
+Snowflake/CI content predates this session's Cortex-Search-abandoned/native-VECTOR/ADR-013 work,
+so "Known Issues" and "Architecture Decisions" both still said things that were no longer true
+(e.g. "Snowflake Cortex serving is not built").
+
+**Updated for accuracy:** `confluence/01_ARCHITECTURE_DECISIONS.md` (added ADR-013; corrected the
+ADR-005 entry to describe the native-VECTOR build, not Cortex Search), `05_RELEASE_NOTES.md` (new
+2026-06-27 entry), `06_KNOWN_ISSUES.md` (resolved the two stale "not built" claims for real, with
+citations), `02_PIPELINE_DOCUMENTATION.md` (serving line), `00_START_HERE.md` (reading path).
+`CLAUDE.md`'s own Stack table had the same staleness (`Snowflake Cortex ... + Cortex Search`) —
+fixed there too, since it's the same class of drift the anti-shortcut protocol exists to catch.
+
+**Runbook filled in for real** (`04_RUNBOOK.md`) — its own stated stub-gate ("v1 fully ships to
+serving AND ≥1 real rerun-after-failure has happened") is satisfied twice over now, so it was
+written from real, already-documented incidents only (no fabrication): the Airflow `AIRFLOW_HOME`/
+`venv_airflow` activation gotchas, the `.env`-not-loaded `env_guard` fail-closed pattern, the
+`_load_dotenv()` inline-comment bug, the Gemini hard-daily-quota wait, the Snowflake provisioning/
+reconciliation owner-gating convention, and the CI `edit_decision_list` seed-missing bug.
+`07_INCIDENT_POSTMORTEM.md` stays correctly a stub (no production incident has happened — these are
+all build-time fixes) but had its own stale "Cortex is unbuilt" line corrected.
+
+**New page added — `08_DEPLOYMENT_GUIDE.md`.** Real CI/CD (AWS OIDC role federation, ADR-013) and
+a real 5-phase Snowflake provisioning script (`scripts/provision_snowflake_serving.py`) existed but
+had no single page a new maintainer could follow end-to-end — only scattered ADR prose. Built from
+real, already-verified mechanics only: what `real-build` actually does on push to `main`, the
+one-time AWS console setup, the 5 provisioning phases with the dry-run/`--apply` convention, and the
+storage-integration human-in-the-loop IAM-trust handshake that can't be scripted from either side.
+Wired into `scripts/sync_docs_to_confluence.py`'s `PUBLISH_SET` and the Start Here reading path
+(now 9 pages, was 8).
+
+**Pushed live for real** (not dry-run): `python scripts/sync_docs_to_confluence.py` against the
+real Confluence space. **7 new pages created** (Pipeline Documentation id=2850831, Data Contract
+id=2883599, Runbook id=2949163, Release Notes id=2949179, Known Issues id=2850861, Incident
+Postmortem id=2883615, Deployment Guide id=2949195) — the 2026-06-27 04:45 restructuring had
+written these markdown files but never actually pushed them live (its own commit message notes
+"live sync still held pending homepage restore"), so this was their first real publish. **17
+existing pages updated by title** (Start Here, Architecture Decisions, all the linked
+`architecture/*.md` detail pages, PROJECT_STATUS) — version-incremented, zero duplicates, confirming
+the create-or-update-by-title logic works exactly as designed.
+
+**Verified before pushing:** full governance sweep clean — `ruff`, `doc_reference_contract.py`
+(10 confluence/CLAUDE.md docs together), `boundary_contract.py`, `lineage_contract.py`,
+`gen_repo_map.py --check` (127 files, was 126 — the new Deployment Guide page), `adr_coupling_contract.py`
+(no structural change — pure documentation, same precedent as the 2026-06-22 doc-gap convene).
+
 ## Next step when resuming (v1 path — build feature store FIRST, serve AFTER it has rows)
 
 **Done, 2026-06-22 → 2026-06-25** (see dated sections above for evidence per item): all 19/19
@@ -1054,9 +1190,11 @@ history):**
      doc-reference, repo-map `--check`, adr-coupling — the latter confirmed an ADR touch
      accompanied every structural script change, no `ADR_COUPLING_WAIVED` needed); `ruff check .`
      clean repo-wide.
-   **Still open, unchanged from before this workstream:** a checked-in automated row-count+key
-   reconciliation test, `COST_LOG.md`, wiring Airflow's `refresh_serving` to real
-   `ALTER EXTERNAL TABLE ... REFRESH` calls.
+   **All three closed same day, ADR-005 Addendum #5:** checked-in automated row-count+key
+   reconciliation test (`tests/reconcile_snowflake_serving.py`), `COST_LOG.md`, Airflow's
+   `refresh_serving` wired to real `ALTER EXTERNAL TABLE ... REFRESH` calls — then actually run
+   live for real later the same day, owner sign-off obtained; see "Snowflake refresh +
+   reconciliation — RUN LIVE FOR REAL" above for the live evidence.
 4. ✅ **DONE 2026-06-25 — see "v1.5 performance marts — smoke-tested + reverted" section below
    for full evidence.** ~~v1.5 performance marts — re-confirm data mode with the owner before
    building further. Owner has been directing this turn-by-turn (synthetic-to-prove-the-pipe,

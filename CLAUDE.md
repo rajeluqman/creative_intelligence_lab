@@ -111,7 +111,7 @@ dedicated vector DB. Full ruling: `BACKLOG.md`.
 | Quality | Great Expectations | per-layer suites + golden-dataset | LLM-output gates |
 | Orchestration | local Airflow | `dags/creative_intel_pipeline.py` | deferrable |
 | Significance | Python post-step | `scripts/significance_post_step.py` | v1.5 |
-| **Serving** | reads Gold S3 | **Snowflake Cortex** (external tables + Cortex Search + Power BI); **DuckDB VSS = $0 fallback** | read-only veneer; Gold S3 = sole truth (ADR-005) |
+| **Serving** | reads Gold S3 | **Snowflake** (external tables + native `VECTOR` semantic search + Power BI; managed Cortex Search Service tried for real, abandoned — trial-tier wall, ADR-005 Addenda #2–#4); **DuckDB VSS = $0 fallback** | read-only veneer; Gold S3 = sole truth (ADR-005); reconciliation run live 2026-06-27 |
 
 ⚠️ Stack boundary (ADR-001 + **ADR-005**): **storage = unified S3** (no MinIO; DuckDB catalog
 ephemeral/compute-only). DuckDB over Spark settled (ADR-001) — DuckDB stays the transform engine.

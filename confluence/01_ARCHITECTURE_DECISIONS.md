@@ -32,9 +32,18 @@ chunking upstream into the extraction script.
 
 ### 4. Unified S3 storage + Snowflake serving veneer — `architecture/ADR-005-unified-s3-and-snowflake-serving.md`
 All layers persist to **real S3**; DuckDB's catalog is ephemeral/compute-only. **Gold S3 is the sole
-source of truth.** Snowflake Cortex is a read-only serving veneer over Gold (with a DuckDB VSS $0
+source of truth.** Snowflake is a read-only serving veneer over Gold (with a DuckDB VSS $0
 fallback). **Why it matters:** never let Snowflake (or any serving layer) become a second copy of the
-truth — serving is a view over Gold, not a duplicate. No MinIO (owner override).
+truth — serving is a view over Gold, not a duplicate. No MinIO (owner override). A checked-in,
+re-runnable reconciliation script (`tests/reconcile_snowflake_serving.py`) is the live trip-wire for
+this rule — it has been run live against the real account and exact-matches on all 8 models.
+**Addendum, same ADR (2026-06-27):** the managed Cortex Search Service was tried for real and
+abandoned after three genuine blockers, the last one terminal — `EMBED_TEXT_768` is gated off
+trial-tier Snowflake accounts entirely, a billing wall, not an engineering gap. Built instead: a
+native `VECTOR(FLOAT, 768)` view (`PUBLIC.FACT_CHUNK_VECTOR`) over the BYO-Gemini embedding column,
+queried with `VECTOR_COSINE_SIMILARITY` — same answer shape as the DuckDB VSS path, zero second
+embedding surface. **Why it matters:** if you're tempted to re-attempt Cortex Search Service on this
+account, don't — the wall is account-tier, not code; see ADR-005 Addenda #2–#4 for the full trail.
 
 ### 5. Content-hash identity, multi-client — `architecture/ADR-006-multi-client-tenancy.md`
 `asset_id = sha256("{client_id}:{content_sha256}")`. Identity is the content, scoped per client, so
@@ -59,6 +68,13 @@ survives a delete; re-extraction on a new prompt/model does not. Know this befor
 Airflow runs in an isolated `venv_airflow/` and shells out to the real scripts in the main `venv/`.
 **Why it matters:** keep the orchestration deps separate from the pipeline deps; tasks invoke
 scripts cross-venv, they don't import them.
+
+### 9. AWS OIDC role federation for CI — `architecture/ADR-013-aws-oidc-ci-federation.md`
+CI's `real-build` job (push-to-`main` only, never `pull_request`) assumes a dedicated
+`creative-intel-ci-role` via GitHub's OIDC token, then runs a real `dbt build -s +marts.core`
+against real S3 — least-privilege (read-only Bronze, read+write Silver/Gold only). **No long-lived
+AWS key is stored anywhere.** **Why it matters:** if you're adding a new CI job that needs AWS
+access, federate through this same role/pattern — don't add a static-key GitHub secret.
 
 ## Internal / governance ADRs (not pipeline architecture — skim only)
 

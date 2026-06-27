@@ -74,6 +74,9 @@ PUBLISH_SET: list[tuple[str, str | None]] = [
     ("confluence/06_KNOWN_ISSUES.md", "Known Issues"),
     # 8. Incident Postmortem
     ("confluence/07_INCIDENT_POSTMORTEM.md", "Incident Postmortem"),
+    # 9. Deployment Guide (added 2026-06-27 — real CI/CD + Snowflake provisioning mechanics
+    # now exist and weren't covered by the original 8-page set)
+    ("confluence/08_DEPLOYMENT_GUIDE.md", "Deployment Guide"),
     # Detailed build log behind Release Notes
     ("PROJECT_STATUS.md", None),
 ]

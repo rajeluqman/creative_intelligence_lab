@@ -25,17 +25,21 @@ idiom being structurally sound, not on a demonstrated failing-then-passing run. 
 
 ## Serving / storage
 
-**Two Gold stub models produce a phantom row when read raw.**
+**Two Gold stub models produce a phantom row when read raw — confirmed handled, not a live risk.**
 `bridge_asset_lineage` and `fact_extraction_run` are `where 1=0` stubs; dbt-duckdb pads an empty
-`external` model with a 1-row all-NULL parquet. dbt's own view filters it to 0 rows, but a **raw**
-parquet reader (e.g. Snowflake external table) sees 1 phantom row. ADR-005's reconciliation test
-must read both sides consistently (both raw or both null-filtered) or it will false-positive.
-*(PROJECT_STATUS.md, "Silver/Gold S3 materialization — FIXED".)*
+`external` model with a 1-row all-NULL parquet, which a **raw** reader (DuckDB httpfs or a
+Snowflake external table) sees as 1 row. `tests/reconcile_snowflake_serving.py` reads both sides
+raw on purpose, so this reconciles as 1/1 by design — confirmed on the real 2026-06-27 live run, not
+a false-positive. Still worth knowing if you write a *different* check against these two models.
+*(PROJECT_STATUS.md, "Silver/Gold S3 materialization — FIXED"; "Snowflake refresh + reconciliation
+— RUN LIVE FOR REAL".)*
 
-**Snowflake Cortex serving is not built.** External tables + Cortex Search over the now-real Gold S3
-data (completion-plan item 3) — blocked on filling `SNOWFLAKE_WAREHOUSE`/`DATABASE`/`ROLE` in
-`.env`. DuckDB VSS already covers the $0-fallback search path for real. *(PROJECT_STATUS.md, "Next
-step when resuming", item 3.)*
+**RESOLVED 2026-06-27 — Snowflake serving is built and live.** External tables (8, row-for-row
+reconciled live against real Gold S3) + a native `VECTOR` semantic-search view replace the managed
+Cortex Search Service, which was tried for real and abandoned (trial-tier accounts can't run the
+`EMBED_TEXT_768` AI function it needs — an account-tier wall, not an engineering gap; full trail in
+ADR-005 Addenda #2–#4). DuckDB VSS remains the $0 fallback. *(PROJECT_STATUS.md, "Snowflake refresh
++ reconciliation — RUN LIVE FOR REAL".)*
 
 ## Orchestration / ops (owner decisions, not defaults)
 
@@ -44,10 +48,11 @@ autonomously call Drive + Gemini on a timer, unattended — a real cost/automati
 project's FinOps posture treats as owner-gated, not a default to silently flip. *(PROJECT_STATUS.md,
 "Smaller named gaps" item 4.)*
 
-**`dbt build` is not in CI** — only `dbt parse` + `dbt seed` run (placeholder env, $0, no cloud).
-Adding a real build needs AWS credentials as GitHub Actions secrets on a `pull_request`-triggered
-workflow — a real security/access-grant decision needing explicit owner sign-off, not an
-implementation detail. *(PROJECT_STATUS.md, "Smaller named gaps" item 3.)*
+**RESOLVED 2026-06-27 — `dbt build` now runs in CI for real.** Owner chose AWS OIDC role
+federation over a static-key GitHub secret (ADR-013) — no long-lived AWS credential is stored
+anywhere. Gated `push`-to-`main` only, never `pull_request`. Proven on a real Actions run: OIDC
+handshake succeeded, all 8 Gold external models built through the least-privilege role.
+*(PROJECT_STATUS.md, "AWS OIDC for real `dbt build` in CI".)*
 
 **ADR-007's guarded-delete isn't scheduled yet.** `scripts/enforce_landing_ttl.py` is fully built and
 tested at the CLI/function level, but the ADR names it as "a scheduled Airflow task" and no DAG task

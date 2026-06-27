@@ -57,7 +57,8 @@ the design, not an obstacle.
 
 ## Your onboarding reading path
 
-Eight pages, in order — the standard DE-team doc set, each page telling you who it's for:
+Nine pages, in order — the standard DE-team doc set plus one added for real CI/cloud deployment
+mechanics, each page telling you who it's for:
 
 1. **Pipeline Documentation** — the flow, source → landing → bronze → silver → gold. Read by
    everyone. `confluence/02_PIPELINE_DOCUMENTATION.md`
@@ -66,12 +67,15 @@ Eight pages, in order — the standard DE-team doc set, each page telling you wh
 3. **Architecture Decisions (ADR)** — why DuckDB not Spark, content-hash identity, etc. Read by
    architects & reviewers. `confluence/01_ARCHITECTURE_DECISIONS.md`
 4. **Data Dictionary** — what every column means. Read by BI & analysts. `architecture/DATA_DICTIONARY.md`
-5. **Runbook** — how to rerun the pipeline on failure. Read by support & ops. **Stub today** — not
-   real yet, see the page for why. `confluence/04_RUNBOOK.md`
+5. **Runbook** — how to rerun the pipeline on failure, with real cited incidents. Read by support &
+   ops. `confluence/04_RUNBOOK.md`
 6. **Release Notes** — what changed, most recent first. Read by everyone. `confluence/05_RELEASE_NOTES.md`
 7. **Known Issues** — bugs/gaps not yet fixed. Read by the team. `confluence/06_KNOWN_ISSUES.md`
 8. **Incident Postmortem** — root cause of production issues. Read by engineering. **Stub today** —
    no real incident yet. `confluence/07_INCIDENT_POSTMORTEM.md`
+9. **Deployment Guide** — how CI/CD and Snowflake serving actually deploy (AWS OIDC role
+   federation, the 5-phase Snowflake provisioning script). Read by whoever maintains CI or stands
+   this up on a new account. `confluence/08_DEPLOYMENT_GUIDE.md`
 
 After this, you'll know enough to pick up a maintenance or optimization task and know which ADR and
 which gate it answers to. The detailed build log behind all of this is `PROJECT_STATUS.md`.

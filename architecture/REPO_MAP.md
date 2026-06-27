@@ -11,7 +11,7 @@
 >
 > Not mapped (by design): `.github/`, lockfiles, `*.example`, secret templates, settings.
 
-**126 files mapped.**
+**127 files mapped.**
 
 ## Architecture Decision Records
 
@@ -230,6 +230,7 @@
 | `confluence/05_RELEASE_NOTES.md` | Release Notes | — | — |
 | `confluence/06_KNOWN_ISSUES.md` | Known Issues | — | — |
 | `confluence/07_INCIDENT_POSTMORTEM.md` | Incident Postmortem | — | — |
+| `confluence/08_DEPLOYMENT_GUIDE.md` | Deployment Guide | — | — |
 
 ## Other
 

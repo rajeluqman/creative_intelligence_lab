@@ -5,7 +5,24 @@
 > checkpoints in `PROJECT_STATUS.md`, which remains the detailed source of truth (evidence,
 > row counts, real command output) behind every line here.
 
-## 2026-06-27 — Operating protocol
+## 2026-06-27 — Snowflake serving live + real CI builds
+- **Snowflake serving shipped and verified live**: storage integration + 8 external tables over
+  real Gold S3, row-for-row reconciled via the scoped `CREATIVE_INTEL_ROLE` (not `ACCOUNTADMIN`).
+  A checked-in, re-runnable reconciliation script (`tests/reconcile_snowflake_serving.py`) was then
+  **run live against the real account** — exact row-count + key-set match on all 8 models
+  (`fact_chunk` 169, `dim_asset` 19, etc.).
+- **Cortex Search Service tried for real, abandoned — native VECTOR semantic search shipped
+  instead.** Three real blockers in sequence (BYO-embedding conflict → Dynamic Tables reject
+  external tables → trial-tier accounts can't run the AI function it needs at all — a genuine
+  account-tier wall, not a code gap). Built instead: `PUBLIC.FACT_CHUNK_VECTOR`, a native
+  `VECTOR(FLOAT, 768)` view, queryable via `search_cli.py --snowflake-semantic` — verified against
+  real cross-lingual queries, same retrieval quality as the DuckDB $0 fallback.
+- **CI now runs a real `dbt build` against real S3 on every push to `main`** via AWS OIDC role
+  federation (ADR-013) — no static AWS key stored anywhere. Proven on a real Actions run, not just
+  gate-clean: the OIDC handshake succeeded and all 8 Gold external models built through the
+  least-privilege role.
+- Airflow's `refresh_serving` task wired to real `ALTER EXTERNAL TABLE ... REFRESH` calls + the
+  reconciliation script for `SERVING_BACKEND=snowflake_cortex`; a mismatch now fails the task loud.
 - Confluence restructured into this onboarding-shaped page set (was a 1:1 mirror of every ADR file).
 - Token-efficiency & session-discipline operating protocol adopted (model routing, session-guard
   via context-usage checkpoints, cheap session resume).
