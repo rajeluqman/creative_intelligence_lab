@@ -48,6 +48,16 @@ embedded; cross-lingual eyeball check passed (an English paraphrase with zero li
 overlap correctly retrieved the same Malay "kereta makin berat, makan minyak" complaint
 cluster). Full detail: `PROJECT_STATUS.md` "DuckDB VSS embedding pipeline" section.
 
+**Snowflake-served mirror — BUILT 2026-06-27:** `search_cli.py --snowflake-semantic` queries the
+same BYO-Gemini vector against live Snowflake via `VECTOR_COSINE_SIMILARITY` over
+`PUBLIC.FACT_CHUNK_VECTOR` (a VIEW, not a copy, casting `FACT_CHUNK.embedding` VARIANT->VECTOR;
+built by `scripts/provision_snowflake_serving.py --phase search`). NOT the managed Cortex Search
+Service — that path was tried for real and abandoned (ADR-005 Addenda 2026-06-27 #2/#3/#4: BYO-vs-
+managed-embedding conflict, then a Dynamic-Table-rejects-external-tables limitation, then a
+trial-tier AI-function wall, three successive real failures). Same cross-lingual result reproduced
+live through `CREATIVE_INTEL_ROLE` (not `ACCOUNTADMIN`). Full detail: ADR-005 Addendum (2026-06-27
+#4) + `PROJECT_STATUS.md`.
+
 ---
 
 ## 2. Leg (a) — Search surface

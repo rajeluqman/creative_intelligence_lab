@@ -62,7 +62,7 @@ This is the core inventory marketers search against.
 | `chunk_theme` | What kind of beat this is — Hook, Problem, Solution, Social Proof, CTA, etc. |
 | `sentiment` | The emotional tone of the beat. |
 | `standalone_score` | **1–5: how safe is this beat to reuse on its own**, outside its original ad. This is the field that answers "can I just grab this clip for a new ad?" |
-| `embedding` | **v1.5, BUILT 2026-06-25.** `FLOAT[768]` vector (Gemini `gemini-embedding-001`, BYO per ADR-005 §B), used for semantic similarity search (DuckDB VSS `array_distance`/HNSW, `search_cli.py --semantic`) — not human-readable, not for direct business consumption. Nullable: a chunk only has one once `scripts/generate_embeddings.py` has embedded it (content-hash-gated, idempotent — every chunk in the real 169-chunk dataset has one as of this build). |
+| `embedding` | **v1.5, BUILT 2026-06-25.** `FLOAT[768]` vector (Gemini `gemini-embedding-001`, BYO per ADR-005 §B), used for semantic similarity search (DuckDB VSS `array_distance`/HNSW, `search_cli.py --semantic`; Snowflake mirror, BUILT 2026-06-27, `search_cli.py --snowflake-semantic` via `PUBLIC.FACT_CHUNK_VECTOR`'s `VECTOR_COSINE_SIMILARITY` — same vector, two query surfaces, never a second embedding) — not human-readable, not for direct business consumption. Nullable: a chunk only has one once `scripts/generate_embeddings.py` has embedded it (content-hash-gated, idempotent — every chunk in the real 169-chunk dataset has one as of this build). |
 
 ## `bridge_chunk_compatibility` — which beats can follow which
 

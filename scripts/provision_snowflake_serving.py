@@ -28,19 +28,30 @@ error.
 
 Known gotcha (hit once during the original build, named here so it isn't re-discovered): the
 USING TEMPLATE/INFER_SCHEMA path quotes every inferred column name, so columns land
-case-sensitive lowercase in Snowflake ("asset_id", not ASSET_ID/asset_id unquoted) — any query, BI
-tool, or Cortex Search build against these tables must quote column names.
+case-sensitive lowercase in Snowflake ("asset_id", not ASSET_ID/asset_id unquoted) — any query or
+BI tool against these tables must quote column names.
 
-Still open (not this script's job — see PROJECT_STATUS.md item 3 "Still not built"): the
-chunk_embedding.embedding column infers as VARIANT here, not native VECTOR, so Cortex Search needs
-an explicit cast/reshape step on top of this; a checked-in automated row-count+key reconciliation
-test; COST_LOG.md; wiring Airflow's refresh_serving to an ALTER EXTERNAL TABLE ... REFRESH call.
+4. search — native VECTOR similarity, NOT the managed Cortex Search Service. That managed path was
+   tried and abandoned for real (ADR-005 Addenda 2026-06-27 #2/#3/#4): it needs its own embedding
+   model (conflicts with BYO-Gemini-only), runs on a Dynamic Table internally (rejects
+   EXTERNAL_TABLE sources outright), and its embedding step is gated off trial accounts entirely
+   ("AI function EMBED_TEXT_768 is not available for trial accounts") — confirmed by three
+   successive real --apply failures, not assumed. What this phase actually builds: a VIEW (Clean-ERD
+   "serving = view, never a duplicated physical table") casting FACT_CHUNK.embedding (VARIANT via
+   INFER_SCHEMA) to native VECTOR(FLOAT, 768), queryable with VECTOR_COSINE_SIMILARITY — zero second
+   embedding surface, zero Cortex AI functions, works against an external table because it's a
+   plain view+query, not a Dynamic Table.
+
+Still open (not this script's job — see PROJECT_STATUS.md item 3 "Still not built"): a checked-in
+automated row-count+key reconciliation test; COST_LOG.md; wiring Airflow's refresh_serving to an
+ALTER EXTERNAL TABLE ... REFRESH call.
 
 Usage:
     python scripts/provision_snowflake_serving.py                       # dry-run, all phases
     python scripts/provision_snowflake_serving.py --phase account --apply
     python scripts/provision_snowflake_serving.py --phase storage --apply
     python scripts/provision_snowflake_serving.py --phase tables --apply
+    python scripts/provision_snowflake_serving.py --phase search --apply
 """
 from __future__ import annotations
 
@@ -77,6 +88,7 @@ def _cfg() -> dict:
         "stage": os.environ.get("SNOWFLAKE_STAGE", "GOLD_STAGE"),
         "s3_role_arn": os.environ.get("SNOWFLAKE_S3_ROLE_ARN", ""),
         "bucket": os.environ.get("S3_BUCKET", "creative-intel-lake"),
+        "vector_view": os.environ.get("SNOWFLAKE_VECTOR_VIEW", "FACT_CHUNK_VECTOR"),
     }
 
 
@@ -142,10 +154,30 @@ def table_statements(cfg: dict) -> list[str]:
     return stmts
 
 
+def search_statements(cfg: dict) -> list[str]:
+    # ADR-005 Addendum 2026-06-27 #4: the managed Cortex Search Service path (Addenda #2/#3) is
+    # abandoned - trial accounts can't run its embedding step at all ("AI function EMBED_TEXT_768
+    # is not available for trial accounts"), confirmed by a real failed --apply, not assumed. This
+    # phase now builds a VIEW (not a copy - Clean-ERD "serving = view, never a duplicated physical
+    # table") that casts FACT_CHUNK.embedding (VARIANT via INFER_SCHEMA) to native VECTOR(FLOAT,768)
+    # for VECTOR_COSINE_SIMILARITY queries - zero second embedding surface, zero Cortex AI functions.
+    cols = ('"chunk_id", "asset_id", "transcript_segment", "chunk_theme", "sentiment", '
+            '"standalone_score"')
+    return [
+        f"USE ROLE {cfg['bootstrap_role']};",
+        f"USE DATABASE {cfg['database']};",
+        f"CREATE OR REPLACE VIEW PUBLIC.{cfg['vector_view']} AS\n"
+        f"  SELECT {cols}, \"embedding\"::VECTOR(FLOAT, 768) AS \"embedding_vec\"\n"
+        f'  FROM PUBLIC.FACT_CHUNK WHERE "embedding" IS NOT NULL;',
+        f"GRANT SELECT ON VIEW PUBLIC.{cfg['vector_view']} TO ROLE {cfg['role']};",
+    ]
+
+
 PHASES = {
     "account": account_statements,
     "storage": storage_statements,
     "tables": table_statements,
+    "search": search_statements,
 }
 
 

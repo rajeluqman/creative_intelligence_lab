@@ -10,31 +10,37 @@
 - **Paste-ready first prompt for next session:**
   `Read PROJECT_STATUS "▶ RESUME HERE" and do the next step. Don't re-read the whole repo — open only the files named here, fresh.`
 - **Current state (1 line):** v1 + v1.5 built and verified for real (19/19 assets, 169 chunks,
-  Silver/Gold on S3, VSS semantic search live, perf marts smoke-tested+reverted); Snowflake
-  serving partially live (2026-06-27) — storage integration + 8 external tables over real Gold S3,
-  reconciled row-for-row via the dedicated `CREATIVE_INTEL_ROLE`; Cortex Search not built yet.
-  Airflow standalone restarted + DAG-folder bug fixed same day (see "Re-started 2026-06-27" under
-  the Airflow section) — `creative_intel_pipeline_v1` loads clean, no import errors.
-- **Governance gap closed 2026-06-27 (same day, separate pass):** the Snowflake account/storage-
-  integration/external-table SQL above had no checked-in artifact. Fixed:
-  `scripts/provision_snowflake_serving.py` (idempotent, dry-run by default, `--apply` to execute)
-  + ADR-005 Addendum (2026-06-27). Committed as `0326a88` on `docs/cabinet-doc-gap-closure` — **local
-  only, not yet pushed to origin** (ahead by 1 commit as of this checkpoint) — `git push` first if
-  the next session is a different machine/container, not just another window on this one.
-- **Next concrete step:** Cortex Search over the embedding column (needs a VARIANT→VECTOR reshape
-  first — `CHUNK_EMBEDDING.embedding` landed as `VARIANT` via `INFER_SCHEMA`, not native `VECTOR`;
-  see "Snowflake Cortex serving" item 3 for the full open list: Cortex Search, the checked-in
-  reconciliation test, `COST_LOG.md`, wiring `refresh_serving`). This is real provisioning on the
-  shared-trial Snowflake account — confirm with the owner before any `CREATE`/`--apply`, per
-  ADR-005. Separately, the remaining owner-gated decisions are still untouched (CI `dbt build`
-  secrets, Airflow `@daily`, `chunk_theme` vocab-drift design).
+  Silver/Gold on S3, perf marts smoke-tested+reverted); Snowflake serving live (2026-06-27) —
+  storage integration + 8 external tables over real Gold S3 (row-for-row reconciled via
+  `CREATIVE_INTEL_ROLE`) + a native-`VECTOR` semantic-search view (`PUBLIC.FACT_CHUNK_VECTOR`,
+  `search_cli.py --snowflake-semantic`) mirroring the DuckDB VSS path — both query surfaces real
+  and verified, see "Cortex Search — tried for real, abandoned..." under item 3 below for why it's
+  a VECTOR view and not the managed Cortex Search Service. Airflow standalone restarted + verified
+  clean this session (no import errors, `creative_intel_pipeline_v1` resolves).
+- **Cortex Search Service was tried and is a dead end on this account — don't re-attempt it.**
+  Three real, successive blockers (BYO-embedding conflict → Dynamic Tables reject external tables
+  → trial-tier accounts can't run the AI function it needs at all) — full account-tier wall, not
+  an engineering gap. ADR-005 Addenda 2026-06-27 #2/#3/#4 have the complete trail. The native
+  `VECTOR_COSINE_SIMILARITY` path built instead is the permanent answer for Snowflake-served
+  semantic search here.
+- **Next concrete step:** the three items still open under "Snowflake Cortex serving" item 3: a
+  checked-in automated row-count+key reconciliation test, `COST_LOG.md`, and wiring Airflow's
+  `refresh_serving` to real `ALTER EXTERNAL TABLE ... REFRESH` calls (+ a `CREATE OR REPLACE VIEW`
+  resync for `FACT_CHUNK_VECTOR`). Any further Snowflake `CREATE`/`--apply` still needs owner
+  confirmation first, per ADR-005. Separately, the remaining owner-gated decisions are still
+  untouched (CI `dbt build` secrets, Airflow `@daily`, `chunk_theme` vocab-drift design).
 - **If Airflow isn't running when you resume:** it's a background process in this container, not
   guaranteed to survive a session/container restart. Restart with
   `AIRFLOW_HOME=/workspaces/creative_intelligence_lab/airflow_home` **explicitly set** — without
   it, `airflow standalone` silently defaults to `~/airflow` (a different, empty instance) and
   `creative_intel_pipeline_v1` won't appear. `airflow_home/airflow.cfg`'s `dags_folder` was already
   fixed to point at the real `dags/` path 2026-06-27, so that part doesn't need re-fixing. Admin
-  login: `admin` / see `airflow_home/standalone_admin_password.txt`.
+  login: `admin` / see `airflow_home/standalone_admin_password.txt`. **New gotcha found + fixed
+  2026-06-27 (this session):** also `source venv_airflow/bin/activate` (put it on `PATH`) before
+  `airflow standalone` — `standalone_command.py` spawns webserver/scheduler/triggerer as
+  subprocesses by bare command name (`airflow webserver`, etc.), not by full path, so launching it
+  via `venv_airflow/bin/airflow standalone` directly (without activating) makes every subprocess
+  fail with `FileNotFoundError: 'airflow'` even though the top-level process itself starts fine.
 - **Files in play for that step:** see "Next step when resuming" (bottom of this file) for the
   exact paths per item.
 - **Gate to run before declaring any step done:** `python tests/doc_reference_contract.py <doc>` +
@@ -815,6 +821,53 @@ history):**
    warehouse/role/integration/table names and real `S3_BUCKET`/`CLIENT_ID` values already in
    `.env`; `ruff check` + `py_compile` clean; `tests/boundary_contract.py` green (Snowflake
    connectivity is the ADR-005-approved veneer dep, not banned tech).
+
+   **Cortex Search — tried for real, abandoned after three real blockers, native VECTOR built
+   instead (2026-06-27, same day).** The literal managed `CREATE CORTEX SEARCH SERVICE` failed
+   three times in a row, each a genuine finding, not a guess corrected in hindsight:
+   1. **BYO-vs-managed conflict (caught before writing SQL):** the managed service computes its
+      own embedding via `EMBEDDING_MODEL` — it has no input for `chunk_embedding.embedding`
+      (BYO Gemini) at all, so it would mean a second metered embedding surface, conflicting with
+      ADR-005 §B's original rule. Owner chose, when asked directly, to accept that tradeoff and
+      build the real managed service anyway (ADR-005 Addendum 2026-06-27 #2).
+   2. **Dynamic-Table limitation (real `--apply` failure):** `CREATE CORTEX SEARCH SERVICE ...
+      FROM PUBLIC.FACT_CHUNK` failed — `Object ref FACT_CHUNK of type EXTERNAL_TABLE not
+      supported in Dynamic Table definition`. Cortex Search Service runs on a Dynamic Table
+      internally, which rejects external-table sources outright. Owner chose, when shown this,
+      to add a native-table cache (`FACT_CHUNK_SEARCH_CACHE`, CTAS-resynced from `FACT_CHUNK`,
+      scoped so nothing else is granted `SELECT` on it) as the required indirection (ADR-005
+      Addendum 2026-06-27 #3). The cache built and resynced correctly — 169/169 rows confirmed via
+      a real `SHOW TABLES`.
+   3. **Trial-tier wall (real `--apply` failure, terminal):** `CREATE CORTEX SEARCH SERVICE`
+      itself then failed — `AI function EMBED_TEXT_768 is not available for trial accounts`. No
+      SQL/schema fix exists; only upgrading the shared trial account's tier would, which is a real
+      billing decision on an account shared with `pharma_novartis_sttm`, correctly not decided
+      unilaterally. Owner chose to abandon the managed service (ADR-005 Addendum 2026-06-27 #4).
+      The now-orphaned `FACT_CHUNK_SEARCH_CACHE` was dropped — caught and blocked once by the auto
+      mode permission classifier for unilaterally escalating to `ACCOUNTADMIN` to drop a shared
+      object without being asked, then dropped for real only after the owner explicitly
+      authorized it.
+
+   **Built instead — native `VECTOR` similarity (no second embedding surface, no Cortex AI
+   functions, works against an external table):** `scripts/provision_snowflake_serving.py`'s
+   `search` phase now creates `PUBLIC.FACT_CHUNK_VECTOR`, a **VIEW** (Clean-ERD "serving = view,
+   never a duplicated physical table") casting `FACT_CHUNK.embedding` (`VARIANT` via
+   `INFER_SCHEMA`) to native `VECTOR(FLOAT, 768)`, plus `search_cli.py --snowflake-semantic` (new
+   leg (d), mirrors leg (c)'s DuckDB query shape). **Verified for real, both directly and via the
+   shipped CLI, using `CREATIVE_INTEL_ROLE` (not `ACCOUNTADMIN`):**
+   - `"car feels sluggish and burns more fuel than before"` (English, zero literal overlap with
+     the Malay transcripts) → top-5 correctly the same "makin berat, makan minyak" engine-wear
+     complaint + ECU/spark-plug/combustion cluster already proven on the DuckDB side
+     (`sim=0.6744` top hit), reproduced through Snowflake.
+   - `"kereta makin berat dan makan minyak"` (near-literal Malay) → `sim=0.8306` top hit, correctly
+     ranked above paraphrased variants.
+   - All governance gates re-run clean after every edit in this sequence (lineage, boundary,
+     doc-reference, repo-map `--check`, adr-coupling — the latter confirmed an ADR touch
+     accompanied every structural script change, no `ADR_COUPLING_WAIVED` needed); `ruff check .`
+     clean repo-wide.
+   **Still open, unchanged from before this workstream:** a checked-in automated row-count+key
+   reconciliation test, `COST_LOG.md`, wiring Airflow's `refresh_serving` to real
+   `ALTER EXTERNAL TABLE ... REFRESH` calls.
 4. ✅ **DONE 2026-06-25 — see "v1.5 performance marts — smoke-tested + reverted" section below
    for full evidence.** ~~v1.5 performance marts — re-confirm data mode with the owner before
    building further. Owner has been directing this turn-by-turn (synthetic-to-prove-the-pipe,

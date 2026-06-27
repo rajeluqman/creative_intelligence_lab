@@ -185,3 +185,126 @@ rule unchanged). Also open: a *checked-in, automated* reconciliation test (today
 but manual one-off query, not a script that re-runs on every refresh), `COST_LOG.md`, and wiring
 Airflow's `refresh_serving` task to an `ALTER EXTERNAL TABLE ... REFRESH` call per model (it remains
 the honest no-op named in ADR-008).
+
+## Addendum (2026-06-27 #2) — §B amended: Cortex Search Service permitted as a second, scoped embedding surface
+
+**The conflict found while starting the "Cortex Search" workstream above:** Snowflake's managed
+`CREATE CORTEX SEARCH SERVICE` computes its **own** embeddings server-side over a chosen text
+column (`EMBEDDING_MODEL`) — it has no input for a precomputed vector, so it cannot be pointed at
+`chunk_embedding.embedding` (BYO Gemini) at all. The originally-planned "cast `VARIANT`→`VECTOR` and
+build Cortex Search over it" path named in the 2026-06-27 addendum above is **not actually how the
+feature works** — that path only enables raw `VECTOR_COSINE_SIMILARITY`/`VECTOR_L2_DISTANCE` SQL,
+not the managed Cortex Search Service. Building the real managed service therefore means Snowflake
+re-embeds `transcript_segment` itself, which is literally the "second metered embedding surface"
+§B's original line forbade.
+
+**Owner decision (asked directly, not defaulted): build the real managed Cortex Search Service,
+accepting the second embedding surface.** §B's BYO-only rule is amended, narrowly:
+- **What changes:** the Snowflake serving veneer's search-relevance ranking now uses Snowflake's
+  own embedding model (Cortex Search default `EMBEDDING_MODEL`) over `"transcript_segment"` —
+  computed and held entirely inside the Cortex Search Service object, an internal Snowflake search
+  index, not a persisted fact.
+- **What does NOT change:** `chunk_embedding.embedding` (BYO Gemini, content-hash-gated,
+  idempotent) stays the **sole persisted/canonical** embedding in Gold S3; the DuckDB VSS `$0`
+  fallback (`search_cli.py --semantic`) is untouched and stays 100% BYO-only; Gold S3 remains sole
+  source of truth — the Cortex Search index is a rebuildable Snowflake-internal artifact (drop +
+  re-`CREATE` via the capture-as-code script reproduces it from `FACT_CHUNK`, same posture as every
+  other object in this ADR), never a fact queried as if it were ground truth.
+- **Cost (FinOps-relevant, ties to Cost discipline item 4 above):** Cortex Search has no
+  per-query/idle-suspend knob the way a warehouse does — it bills wall-clock while it exists.
+  Mitigation is the same one already accepted for the rest of the veneer: `DROP CORTEX SEARCH
+  SERVICE` when not actively demoing, re-provision later via
+  `python scripts/provision_snowflake_serving.py --phase search --apply` (idempotent `IF NOT
+  EXISTS`, same script, new phase) — **$0 loss**, not a backfill.
+- **Object, scoped:** `CREATIVE_INTEL_DB.PUBLIC.CHUNK_SEARCH_SVC`, search column
+  `"transcript_segment"`, attributes `"chunk_id"`, `"asset_id"`, `"chunk_theme"`, `"sentiment"`,
+  `"standalone_score"` (quoted lowercase — the same `INFER_SCHEMA` naming gotcha from the addendum
+  above), `WAREHOUSE = CREATIVE_INTEL_WH`, source query `SELECT ... FROM PUBLIC.FACT_CHUNK`.
+  `CREATIVE_INTEL_ROLE` granted `USAGE` on the service only (not on the warehouse beyond the
+  existing `USAGE, OPERATE` grant it already has).
+
+## Addendum (2026-06-27 #3) — second blocker found live: Dynamic Tables reject EXTERNAL_TABLE; a scoped native-table search cache is the fix
+
+**The blocker (real error from the first live `--apply` of Addendum #2's plan, not theoretical):**
+
+```
+SQL Compilation error: Object ref FACT_CHUNK of type EXTERNAL_TABLE not supported in Dynamic Table definition
+```
+
+Cortex Search Service is implemented internally as a Dynamic Table. Dynamic Tables **cannot be
+built on top of an `EXTERNAL_TABLE` at all**, regardless of `TARGET_LAG` or which column is
+searched — this is a hard Snowflake product limitation, not a config mistake. Since every Gold
+object in Snowflake is an external table over S3 (the whole point of this ADR's spine), the
+managed Cortex Search Service cannot point at `FACT_CHUNK` as it exists today.
+
+**Owner decision (asked directly — this is a second architecture question the spine itself
+warns about, not something to route around silently): a scoped native-table search cache.**
+- **New object:** `CREATIVE_INTEL_DB.PUBLIC.FACT_CHUNK_SEARCH_CACHE` — a native Snowflake `TABLE`,
+  `CREATE OR REPLACE TABLE ... AS SELECT "chunk_id", "asset_id", "transcript_segment",
+  "chunk_theme", "sentiment", "standalone_score" FROM PUBLIC.FACT_CHUNK`. Cortex Search Service's
+  `AS` query now targets this cache, not the external table directly.
+  `provision_snowflake_serving.py`'s `search` phase issues the `CREATE OR REPLACE` (not `IF NOT
+  EXISTS` like every other statement in this script) **on purpose** — the whole point is a full
+  resync against the external table on every run, not a one-time idempotent create. Different
+  idempotency flavor from the rest of the script (always-fresh-replace vs. no-op-if-exists), both
+  still safe to re-run.
+- **Scope fence (this is what keeps it from being the second-source-of-truth the spine forbids):**
+  this cache exists **only** as Cortex Search Service's required input. Nobody queries it as a
+  fact — `CREATIVE_INTEL_ROLE` is **not** granted `SELECT` on it (only `USAGE` on the search
+  service, as in Addendum #2). BI/Power BI/any analytical consumer reads `PUBLIC.FACT_CHUNK` (the
+  external table) directly, never the cache. The `_SEARCH_CACHE` name suffix is deliberate —
+  anyone who finds the object in `SHOW TABLES` should immediately read it as derived, not
+  authoritative.
+- **Staleness is a named, accepted risk, not solved here:** the cache is only as fresh as the last
+  `--phase search --apply` run. It is **not** wired to Airflow's `refresh_serving` task yet — that
+  wiring (already an open item from Addendum #2026-06-27) now also needs to re-run this `CREATE OR
+  REPLACE` on every refresh, not just `ALTER EXTERNAL TABLE ... REFRESH`. Until that's wired, a
+  human re-running the script after a Gold rebuild is the only refresh path. Flagging honestly
+  rather than claiming an automatic sync that doesn't exist yet.
+- **Reconstructible, same posture as the rest of the veneer:** the cache is dropped and rebuilt
+  from `FACT_CHUNK` (itself reconstructible from S3) by re-running the script — **$0 loss**, same
+  as every other object in this ADR.
+
+## Addendum (2026-06-27 #4) — Cortex Search Service abandoned (trial-tier wall); native VECTOR similarity built instead; Addenda #2/#3 superseded
+
+**Third real blocker, terminal this time:** the live `--apply` of Addendum #3's plan got past the
+Dynamic-Table restriction (the cache table built and resynced correctly, 169/169 rows) but failed
+on `CREATE CORTEX SEARCH SERVICE` itself:
+
+```
+AI function EMBED_TEXT_768 is not available for trial accounts.
+```
+
+Cortex Search Service's embedding step requires a Snowflake AI function gated off entirely on
+trial-tier accounts. No SQL or schema workaround fixes this — only upgrading the account off the
+trial tier would, which is a real billing decision on an account shared with the
+`pharma_novartis_sttm` project, out of scope to decide unilaterally.
+
+**Owner decision: abandon the managed Cortex Search Service. Addenda #2 and #3 above are
+superseded, not deleted** (kept as the real record of what was tried and why each layer failed —
+BYO-embedding-vs-managed-service, then Dynamic-Table-vs-external-table, then trial-tier — each a
+genuine finding, not a wrong guess corrected in hindsight). **§B's original single-embedding-surface
+rule is restored, not amended**: no Snowflake-side embedding model is used anywhere in this
+project. The orphaned `FACT_CHUNK_SEARCH_CACHE` table (created, never consumed — the search
+service that would have read it was never successfully created) was dropped.
+
+**Built instead — native `VECTOR` similarity, zero second embedding surface, zero Cortex AI
+functions:**
+- `CREATE OR REPLACE VIEW PUBLIC.FACT_CHUNK_VECTOR` casts `FACT_CHUNK."embedding"` (lands as
+  `VARIANT` via `INFER_SCHEMA`, per the Addendum-2026-06-27 naming/typing gotcha) to native
+  `VECTOR(FLOAT, 768)`, filtering to non-null embeddings. **A view, not a copy** — this is squarely
+  Clean-ERD's own "serving = view, never a duplicated physical table" line, the thing the cache-table
+  workaround in Addendum #3 could not be (a view can't be a Dynamic Table's source either, but it
+  doesn't need to be — plain `SELECT ... ORDER BY VECTOR_COSINE_SIMILARITY(...)` queries work fine
+  against a view over an external table; only the *managed* search-service/Dynamic-Table machinery
+  rejected external tables).
+- Query pattern: embed the search text client-side with the same Gemini model/dimension
+  `scripts/search_cli.py`'s `--semantic` already uses (`task_type=RETRIEVAL_QUERY`,
+  `output_dimensionality=768`), then `SELECT ... VECTOR_COSINE_SIMILARITY("embedding_vec",
+  <query_vector>::VECTOR(FLOAT,768)) AS sim FROM PUBLIC.FACT_CHUNK_VECTOR ORDER BY sim DESC`. Same
+  BYO-Gemini vector, same shape of answer as the DuckDB `$0` fallback — this is the Snowflake-side
+  mirror of that path, not a different feature.
+- `provision_snowflake_serving.py`'s `search` phase now builds this view (`CREATE OR REPLACE VIEW`,
+  same always-fresh-resync rationale as the cache table it replaces) + `GRANT SELECT` to
+  `CREATIVE_INTEL_ROLE`, instead of the Cortex Search Service + cache-table statements.
+**Verified for real:** see PROJECT_STATUS.md for the live query run and result evidence.

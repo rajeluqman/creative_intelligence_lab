@@ -1,7 +1,8 @@
 """v1 search + mix-and-match demo CLI — architecture/SPEC_v1_search.md (Owner: @senior-data-engineer).
 `--semantic` (v1.5 fast-follow, completion-plan item 2) added 2026-06-25.
+`--snowflake-semantic` (Snowflake serving veneer leg) added 2026-06-27 — ADR-005 Addendum #4.
 
-Three legs, one CLI:
+Four legs, one CLI:
   Leg (a) Search        — structured filter + ilike keyword match over `fact_chunk` joined to
                            `dim_asset` (SPEC §2.2). Deterministic predicate filtering.
   Leg (b) Mix-and-Match  — `--assemble` walks the compatibility graph
@@ -15,18 +16,30 @@ Three legs, one CLI:
                            persistent index file, nothing to go stale), ranks by
                            `array_distance`. Was explicitly OUT of v1 (SPEC §1) — this is the
                            named v1.5 fast-follow, not a re-litigation of that ruling.
+  Leg (d) Snowflake      — `--snowflake-semantic "<query text>"`. Same BYO-Gemini query vector as
+            Semantic       leg (c), ranked instead by Snowflake's native `VECTOR_COSINE_SIMILARITY`
+                           against `PUBLIC.FACT_CHUNK_VECTOR` (a VIEW casting `FACT_CHUNK.embedding`
+                           VARIANT->VECTOR(FLOAT,768), built by
+                           `scripts/provision_snowflake_serving.py --phase search`). This is the
+                           Snowflake-serving mirror of leg (c), NOT the managed Cortex Search
+                           Service — that path was tried and abandoned for real (ADR-005 Addenda
+                           2026-06-27 #2/#3/#4: BYO-embedding conflict, then a Dynamic-Table
+                           limitation, then a trial-tier AI-function wall, in that order).
 
-Legs (a)/(b) read the already-built local DuckDB catalog read-only (`target/dev.duckdb`) — the
-same file `dbt build -s +marts.core` produces. Leg (c) needs a second, separate, in-memory
+Legs (a)/(b)/(c) read the already-built local DuckDB catalog read-only (`target/dev.duckdb`) — the
+same file `dbt build -s +marts.core` produces; leg (c) needs a second, separate, in-memory
 writable connection (HNSW `CREATE INDEX` needs write access; the catalog file is opened
 read-only) — still no new direct-S3 connection path, since the rows themselves come from the
-same read-only catalog query, just copied into memory to index.
+same read-only catalog query, just copied into memory to index. Leg (d) opens no local DuckDB
+connection at all — it queries live Snowflake using `CREATIVE_INTEL_ROLE` (the scoped serving
+role, not `ACCOUNTADMIN`).
 
 Usage:
     python scripts/search_cli.py --theme Problem --sentiment frustrated --min-score 4 --contains minyak
     python scripts/search_cli.py --assemble
     python scripts/search_cli.py --assemble --hook-theme Problem --limit 5
     python scripts/search_cli.py --semantic "engine feels heavy and uses more fuel" --limit 5
+    python scripts/search_cli.py --snowflake-semantic "engine feels heavy and uses more fuel" --limit 5
 """
 from __future__ import annotations
 
@@ -250,6 +263,50 @@ def run_semantic(con, args: argparse.Namespace) -> None:
         print(f"      \"{rec['transcript_segment']}\"")
 
 
+def run_snowflake_semantic(args: argparse.Namespace) -> None:
+    import snowflake.connector
+
+    query_vec = _embed_query(args.snowflake_semantic)
+    vec_literal = "[" + ",".join(str(v) for v in query_vec) + "]"
+
+    conn = snowflake.connector.connect(
+        account=os.environ["SNOWFLAKE_ACCOUNT"],
+        user=os.environ["SNOWFLAKE_USER"],
+        password=os.environ["SNOWFLAKE_PASSWORD"],
+        warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "CREATIVE_INTEL_WH"),
+        database=os.environ.get("SNOWFLAKE_DATABASE", "CREATIVE_INTEL_DB"),
+        role=os.environ.get("SNOWFLAKE_ROLE", "CREATIVE_INTEL_ROLE"),
+    )
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            SELECT "chunk_id", "asset_id", "transcript_segment", "chunk_theme", "sentiment",
+                   "standalone_score",
+                   VECTOR_COSINE_SIMILARITY("embedding_vec", {vec_literal}::VECTOR(FLOAT, {EMBEDDING_DIM})) AS sim
+            FROM PUBLIC.FACT_CHUNK_VECTOR
+            ORDER BY sim DESC
+            LIMIT %s
+            """,
+            (args.limit,),
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        print("No embedded clips found in PUBLIC.FACT_CHUNK_VECTOR.")
+        return
+
+    print(f"Top {len(rows)} Snowflake semantic match(es) for {args.snowflake_semantic!r}:\n")
+    for chunk_id, asset_id, transcript, theme, sentiment, score, sim in rows:
+        print(
+            f"[sim={sim:.4f}, score={score}] {chunk_id}  theme={theme!r} sentiment={sentiment!r}  "
+            f"asset={asset_id}"
+        )
+        print(f"      \"{transcript}\"")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="v1 creative feature store demo — search (leg a) + mix-and-match assembly (leg b)."
@@ -279,7 +336,17 @@ def main() -> None:
     parser.add_argument(
         "--semantic", help="free-text query; ranks fact_chunk.embedding by VSS array_distance"
     )
+    # Leg (d) — Snowflake-served semantic (ADR-005 Addendum 2026-06-27 #4)
+    parser.add_argument(
+        "--snowflake-semantic",
+        help="free-text query; ranks PUBLIC.FACT_CHUNK_VECTOR by VECTOR_COSINE_SIMILARITY "
+        "via live Snowflake (needs SNOWFLAKE_* env vars; no local DuckDB catalog needed)",
+    )
     args = parser.parse_args()
+
+    if args.snowflake_semantic:
+        run_snowflake_semantic(args)
+        return
 
     con = _connect()
     try:
