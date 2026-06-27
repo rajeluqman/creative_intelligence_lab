@@ -15,12 +15,19 @@
   reconciled row-for-row via the dedicated `CREATIVE_INTEL_ROLE`; Cortex Search not built yet.
   Airflow standalone restarted + DAG-folder bug fixed same day (see "Re-started 2026-06-27" under
   the Airflow section) — `creative_intel_pipeline_v1` loads clean, no import errors.
+- **Governance gap closed 2026-06-27 (same day, separate pass):** the Snowflake account/storage-
+  integration/external-table SQL above had no checked-in artifact. Fixed:
+  `scripts/provision_snowflake_serving.py` (idempotent, dry-run by default, `--apply` to execute)
+  + ADR-005 Addendum (2026-06-27). Committed as `0326a88` on `docs/cabinet-doc-gap-closure` — **local
+  only, not yet pushed to origin** (ahead by 1 commit as of this checkpoint) — `git push` first if
+  the next session is a different machine/container, not just another window on this one.
 - **Next concrete step:** Cortex Search over the embedding column (needs a VARIANT→VECTOR reshape
   first — `CHUNK_EMBEDDING.embedding` landed as `VARIANT` via `INFER_SCHEMA`, not native `VECTOR`;
   see "Snowflake Cortex serving" item 3 for the full open list: Cortex Search, the checked-in
-  reconciliation test, `COST_LOG.md`, wiring `refresh_serving`). Separately, the remaining
-  owner-gated decisions are still untouched (CI `dbt build` secrets, Airflow `@daily`, `chunk_theme`
-  vocab-drift design).
+  reconciliation test, `COST_LOG.md`, wiring `refresh_serving`). This is real provisioning on the
+  shared-trial Snowflake account — confirm with the owner before any `CREATE`/`--apply`, per
+  ADR-005. Separately, the remaining owner-gated decisions are still untouched (CI `dbt build`
+  secrets, Airflow `@daily`, `chunk_theme` vocab-drift design).
 - **If Airflow isn't running when you resume:** it's a background process in this container, not
   guaranteed to survive a session/container restart. Restart with
   `AIRFLOW_HOME=/workspaces/creative_intelligence_lab/airflow_home` **explicitly set** — without
