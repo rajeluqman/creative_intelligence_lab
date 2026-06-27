@@ -50,7 +50,9 @@ overridden by the owner. Two technical facts from the convene shaped the final f
   fact, a CTAS-internal copy that diverges, or a KPI persisted in Snowflake not reproducible from S3).
 
 ## Cost discipline (FinOps co-sign — hard preconditions before any Snowflake provisioning)
-1. `COST_LOG.md` records the trial start date + a **day-25 teardown reminder** (not day-30).
+1. ~~`COST_LOG.md` records the trial start date + a **day-25 teardown reminder** (not day-30).~~
+   **Superseded 2026-06-25 — see Addendum below.** No forced teardown deadline; `COST_LOG.md`
+   still records the start date as a monitoring practice, not a countdown.
 2. The **$0 fallback demo is built and proven BEFORE the trial clock starts** — DuckDB VSS path
    (or a recorded screen-capture), so the portfolio never depends on a live trial.
 3. Embeddings single-sourced (BYO Gemini, content-hash-gated) — no re-embed on unchanged chunks.
@@ -70,3 +72,54 @@ overridden by the owner. Two technical facts from the convene shaped the final f
   owner before execution.
 - **Sequencing:** serving is built **after** v1 Gold emits real rows. Building Cortex Search over
   empty stub Gold is out of order; the 30-day clock does not justify it.
+
+## Addendum (2026-06-25) — day-25 teardown requirement lifted
+
+**Owner instruction:** the Snowflake trial is not charging the linked card; keep it provisioned
+long-running, no forced teardown deadline. This replaces Cost discipline item 1's "day-25
+teardown reminder" — `COST_LOG.md` still records the trial start date (monitoring practice,
+not removed), but there is no countdown forcing a teardown action.
+
+**What this does NOT change** (per the owner's own addendum-parity rule — an addendum amends
+narrowly, it doesn't reopen the whole ADR): the SOURCE-OF-TRUTH BOUNDARY above is untouched —
+Gold S3 remains sole truth, Snowflake remains a read-only, disposable projection, and the
+reconciliation test still gates it. Cost discipline items 2–4 (the $0 fallback **proven first**,
+single-sourced embeddings, suspend-Cortex-Search-when-idle) remain in force, unrevised — this
+addendum lifts the time-pressure on item 1 only, not the build-order or the other three
+spending guards. If the card ever starts being charged (trial converts, limits change), this
+addendum is void and the original day-25 discipline resumes — re-evaluate before that happens,
+don't wait for a surprise invoice.
+
+## Addendum (2026-06-25 #2) — Silver/Gold external-parquet path convention (client-partitioned)
+
+§A ratified that Silver/Gold materialize as `external` parquet on S3 but did not fix the path
+**layout**. Implementing it (Silver `int_chunk_cleaned` + Gold `marts.core`) forced the call.
+
+**Decision:** `s3://<bucket>/<layer>/<model>/<CLIENT_ID>/<model>.parquet` — model-first, then a
+**per-client partition**. Set via the `s3_external(layer, name)` macro (`macros/s3_external.sql`),
+called from each model's `config(location=...)`. Tenancy is **path-level** (`env_var('CLIENT_ID')`,
+no default → fail-loud), never a data column.
+
+**Why client-partitioned, not un-partitioned `gold/<model>/*.parquet`:** dbt-duckdb's `external`
+materialization does a **full overwrite** of its location every run, and bronze is read **one
+client per dbt run** (ADR-006; `_sources.yml` has no `CLIENT_ID` default; the DAG Param is single-
+client). An un-partitioned path would therefore make client B's build **clobber client A's** Gold
+parquet — there is no single build that emits all clients at once. (This supersedes a loose
+"un-partitioned is the natural fit, Gold spans all clients" note in the 2026-06-25 completion
+plan, which assumed an all-clients-in-one-build that this pipeline never does.)
+
+**Why path-level and not DuckDB-native `partition_by`:** `fact_chunk` (and the bridges) carry **no
+`client_id` column** — Clean-ERD axis 4 keeps `client_id` on `dim_asset` only, reached by join —
+so partitioning by a data column cannot apply. Path-level tenancy mirrors the already-shipped
+`landing/<client_id>/` and `bronze/<client_id>/` layout.
+
+**Cross-client serving read** (when needed) globs the partition: `gold/<model>/*/<model>.parquet`.
+
+**Carried-forward finding (for the Snowflake serving workstream — does NOT block this ADR):** the
+two `where 1=0` v1 stubs (`bridge_asset_lineage`, `fact_extraction_run`) write a **1-row all-NULL**
+parquet — dbt-duckdb pads empty models so the schema survives. dbt's own read-back view filters
+that row (logical count 0), but a **raw** reader (Snowflake external table / DuckDB-VSS) sees 1
+phantom row. The ADR-005 reconciliation test must read **consistently** (both raw or both
+null-filtered) or it will false-positive on these two stubs. Verified 2026-06-25: the 6 non-stub
+models reconcile exactly (dbt-view count == raw httpfs S3 read: 169/169 chunks, 19 assets,
+363/924/169); only the two stubs show the 0-vs-1 gap.

@@ -39,7 +39,7 @@ performance-correlation** layer. NOT a Kimball star.
    ┌──────────────────────────┐   │     chunk_theme              │   ┌──────────────────────────────┐
    │  dim_keyword_bridge      │◄──┤     sentiment                ├──►│   dim_theme_bridge           │
    │  chunk_id, keyword       │   │     standalone_score (1..5)  │   │   chunk_id, theme            │
-   └──────────────────────────┘   │     embedding (v1.5, VSS)    │   └──────────────────────────────┘
+   └──────────────────────────┘   │     embedding (BUILT, VSS)   │   └──────────────────────────────┘
                                    └───────────┬──────────────────┘
                                                │ chunk_id
                   ══════════════ v1.5 PERFORMANCE LAYER ══════════════
@@ -126,8 +126,8 @@ never overload `dim_asset`.
 ## 4. The three traversals that matter
 
 **T1 — Search (v1 north-star):** `fact_chunk` filtered by theme/sentiment/`standalone_score`
-(+ VSS embedding similarity in v1.5), **scoped to one client** via
-`fact_chunk → dim_asset.client_id` (ADR-006).
+(+ VSS embedding similarity, v1.5, BUILT 2026-06-25 — `search_cli.py --semantic`), **scoped to
+one client** via `fact_chunk → dim_asset.client_id` (ADR-006).
 
 **T2 — Performance correlation (v1.5):**
 `fact_ad_performance → bridge_ad_chunk → fact_chunk` , aligned by chunk **role** via

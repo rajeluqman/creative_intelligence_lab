@@ -10,9 +10,23 @@ clean-targets: ["target", "dbt_packages"]
 models:
   creative_intelligence:
     staging:      {+materialized: view}
-    intermediate: {+materialized: view}
+    # Silver/Gold persist to real S3 as `external` parquet (ADR-005 §A: Gold S3 = sole source of
+    # truth; DuckDB catalog is compute-only). Paths are CLIENT-PARTITIONED — `external` does a full
+    # overwrite of its location every run, and bronze is read one client per run (ADR-006, no
+    # CLIENT_ID default), so an un-partitioned path would make client B's build clobber client A's
+    # parquet. Tenancy is PATH-level (env_var CLIENT_ID), never a column — fact_chunk has no
+    # client_id (Clean-ERD axis 4; it reaches client via dim_asset), so DuckDB's native
+    # partition_by-a-column can't apply here. Mirrors landing/<client_id>/ + bronze/<client_id>/.
+    #
+    # No project-level `+materialized`/`+location` here for Silver/Gold: project-level config
+    # renders at PARSE time (`this`/model name undefined then), AND the golden_test CI target
+    # needs a different materialization entirely (plain local view, never `external`, so the $0
+    # golden-dataset test never touches real S3). Every Silver/Gold model instead calls
+    # `{{ config(**silver_gold_config(layer, name)) }}` (macros/s3_external.sql) — target-aware,
+    # resolved per-model where `this`/the model name are both in scope.
+    intermediate: {+materialized: view}   # Silver = int_chunk_cleaned only (see its own config()); the perf intermediates stay views until v1.5 (item 4).
     marts:
-      core:        {+materialized: table}
+      core: {}   # each model's own silver_gold_config() call sets materialized — see macros/s3_external.sql
       performance: {+materialized: table}
 
 seeds:
@@ -23,7 +37,7 @@ seeds:
     dim_client:
       +column_types: {client_id: varchar, client_name: varchar, account_support_owner: varchar, drive_folder_id: varchar, landing_ttl_days: integer, status: varchar}
     asset_manifest:
-      +column_types: {asset_id: varchar, client_id: varchar, content_sha256: varchar, asset_name: varchar, asset_type: varchar, parent_asset_id: varchar, duration_sec: integer, source_uri: varchar}
+      +column_types: {asset_id: varchar, client_id: varchar, content_sha256: varchar, asset_name: varchar, asset_type: varchar, parent_asset_id: varchar, duration_sec: integer, source_uri: varchar, ingested_at: timestamp}
     edit_decision_list:
       +column_types: {ad_id: varchar, chunk_id: varchar, chunk_role: varchar, position_in_ad: integer, start_sec: double, end_sec: double}
     map_ad_asset:

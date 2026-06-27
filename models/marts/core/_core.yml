@@ -29,3 +29,7 @@ models:
         tests: [{relationships: {to: ref('dim_asset'), field: asset_id}}]
       - name: standalone_score
         tests: [{dbt_expectations.expect_column_values_to_be_between: {min_value: 1, max_value: 5}}]
+  - name: bridge_chunk_compatibility
+    columns:
+      - name: chunk_id
+        tests: [{relationships: {to: ref('fact_chunk'), field: chunk_id}}]

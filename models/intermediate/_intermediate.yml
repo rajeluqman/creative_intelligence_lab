@@ -1,0 +1,36 @@
+version: 2
+models:
+  - name: int_chunk_cleaned
+    # great_expectations/expectations/silver_chunk.json executed for real, 2026-06-25
+    # (DQD.md §2 listed this suite; it was never actually wired as a dbt test at Silver grain
+    # until now — PROJECT_STATUS.md completion-plan item 5). Severity/action mirrors DQD.md §1
+    # gate 2 ("Business-constraint gate... quarantine the row, do not retry") — CRITICAL in the
+    # GE JSON does NOT mean dbt `error` here; same warn+store_failures convention already used
+    # for gate 0 (bronze_asset_raw.chunk_count) — a malformed LLM-output row is logged for
+    # review, not allowed to halt the whole batch over one bad chunk.
+    columns:
+      - name: chunk_id
+        tests:
+          - not_null: {config: {severity: warn, store_failures: true}}
+          - unique: {config: {severity: warn, store_failures: true}}
+      - name: standalone_score
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 1
+              max_value: 5
+              config: {severity: warn, store_failures: true}
+      - name: chunk_theme
+        tests:
+          - not_null: {config: {severity: warn, store_failures: true}}
+      - name: sentiment
+        tests:
+          - accepted_values:
+              # Must match scripts/run_gemini_extract.py's SENTIMENT_ENUM exactly.
+              values: ["energetic", "frustrated", "aspirational", "neutral", "urgent", "calm"]
+              config: {severity: warn, store_failures: true}
+    tests:
+      # Table-level row-count floor — a STRUCTURAL canary (S3 wiring break, empty extraction
+      # run), not a per-row LLM-quality issue, so this one is NOT downgraded to warn: an empty
+      # Silver layer means something upstream is broken, not "one bad chunk to quarantine."
+      - dbt_expectations.expect_table_row_count_to_be_between:
+          min_value: 1

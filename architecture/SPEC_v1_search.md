@@ -40,6 +40,14 @@ search only**. Semantic vector search (embeddings + DuckDB VSS) is a **v1.5 fast
 keyword search. The `embedding` column on `fact_chunk` (shown in `ERD_consolidated.md`) is
 **reserved/nullable in v1**, populated in v1.5 when VSS lands. No model change needed to add it later.
 
+**v1.5 fast-follow — BUILT 2026-06-25:** `scripts/generate_embeddings.py` (BYO Gemini
+`gemini-embedding-001`, `FLOAT[768]`, content-hash-gated idempotent, persisted to
+`gold/chunk_embedding/<client_id>/` per ADR-005 §B) + `search_cli.py --semantic` (ephemeral
+in-memory DuckDB VSS HNSW index, `array_distance` ranking). Real run: all 169/169 real chunks
+embedded; cross-lingual eyeball check passed (an English paraphrase with zero literal word
+overlap correctly retrieved the same Malay "kereta makin berat, makan minyak" complaint
+cluster). Full detail: `PROJECT_STATUS.md` "DuckDB VSS embedding pipeline" section.
+
 ---
 
 ## 2. Leg (a) — Search surface

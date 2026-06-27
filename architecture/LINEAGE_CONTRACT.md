@@ -39,7 +39,7 @@ python tests/lineage_contract.py                      # default seeds/
 python tests/lineage_contract.py <manifest> <dim_client>
 ```
 - **CI:** `.github/workflows/ci.yml` → "Lineage contract" gate (PR + push to main).
-- **Hook:** `.claude/hooks/lineage_guard.py` auto-runs it after any edit to the manifest,
+- **Hook:** `.claude/hooks/governance_guard.py` auto-runs it after any edit to the manifest,
   `dim_client.csv`, or the ingest script, and blocks on failure.
 
 ## Changing a rule

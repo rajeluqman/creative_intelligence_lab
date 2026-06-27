@@ -2,14 +2,124 @@
 
 > Resume checkpoint. Read this BEFORE reading code (token discipline, CLAUDE.md).
 
+## ▶ RESUME HERE (next session — read THIS block first, not the whole file)
+> Cheap-resume per ADR-012 Lever 6. This file is ~700 lines; you do NOT need to read it all to
+> continue. Read this block, do the next step, expand into the dated sections below only for the
+> evidence you actually need.
+
+- **Paste-ready first prompt for next session:**
+  `Read PROJECT_STATUS "▶ RESUME HERE" and do the next step. Don't re-read the whole repo — open only the files named here, fresh.`
+- **Current state (1 line):** v1 + v1.5 built and verified for real (19/19 assets, 169 chunks,
+  Silver/Gold on S3, VSS semantic search live, perf marts smoke-tested+reverted); the operating
+  protocol ADR-012 + ADR-011 rescope just landed (2026-06-27).
+- **Next concrete step:** owner's pick of the still-open items — Snowflake Cortex serving
+  (Next-step item 3), or one of the owner-gated decisions (CI `dbt build` secrets, Airflow
+  `@daily`, `chunk_theme` vocab-drift design). None are started; all need an owner call, not a default.
+- **Files in play for that step:** see "Next step when resuming" (bottom of this file) for the
+  exact paths per item.
+- **Gate to run before declaring any step done:** `python tests/doc_reference_contract.py <doc>` +
+  `python tests/lineage_contract.py` + `python tests/boundary_contract.py` + `python scripts/gen_repo_map.py --check`.
+- **Session discipline:** watch the Claude Context Bar — red (>75%) = checkpoint here + start fresh.
+
 ## Where we are
-Standalone scaffold complete. Core dimension layer is **real and tested**: `dim_client`,
-`dim_asset`, `bridge_asset_lineage` build and pass all FK/uniqueness tests against seeded
-data. Chunk-grain Silver/Gold (`stg_gemini_raw`, `int_chunk_cleaned`, `fact_chunk`, the
-keyword/theme/compatibility bridges) are still wired-but-empty — correct SQL, blocked on
-real Gemini output (no video has been extracted yet; see "Next step when resuming").
-`fact_ad_performance` v1.5 models remain `where 1=0` stubs.
+**Full real end-to-end run complete, 2026-06-24** (started 2026-06-22, real client, real Drive
+folder, real Gemini calls — everything before this was synthetic fixtures). **19/19** real
+videos fully through Bronze→Silver→Gold; `fact_chunk` has **169 real chunks** from real ad
+transcripts (Malay-language automotive ads), both governance contracts green. The last 6 were
+quota-blocked at the 2026-06-22 checkpoint (Gemini free-tier `generate_content_free_tier_requests`,
+20/day for `gemini-2.5-flash`, confirmed HARD-DAILY) and resumed cleanly 2 days later with zero
+pipeline-code change, exactly as that checkpoint predicted (idempotent skip-existing). See "First
+real Drive run" below for the 2026-06-22 account (client_id renamed `demo_client`→`voltecx`,
+two new automated contracts, three real bugs fixed) and "Gemini quota resume" below for the
+2026-06-24 completion (one more real bug found: env vars weren't exported to the shell running
+the extraction script).
+`fact_extraction_run` and `bridge_asset_lineage` (v1 core) remain `where 1=0` stubs (correction
+2026-06-25: this line previously misattributed the stub to `fact_ad_performance`, which is
+actually a fully-written model per `architecture/SPEC_v1.5_performance_marts.md` — it's blocked
+on missing real Meta/TikTok performance data, not on unwritten SQL; see "Next step" item 4).
 Architecture of record is ratified (`architecture/`); cabinet of 7 agents seated in `.claude/agents/`.
+
+## First real Drive run — 2026-06-22 (client: voltecx)
+Owner's own Drive folder (25 files, 6 byte-identical dupes correctly collapsed by the
+content-hash firewall → 19 real assets). Walked through `.env`/`seeds/dim_client.csv` setup,
+service-account JSON placement (new gitignored `secrets/` dir), then ran the real chain.
+
+**Mid-run pivot — `demo_client` → `voltecx` rename (owner caught this, not pre-empted):**
+the placeholder `client_id=demo_client` was still wired for this real client. @data-architect
+ruling: VETOED prefixing the client into the hash/filename (re-treads ADR-006 Rejected Alt
+#2 — the hash already disambiguates tenants; path-level partition is where legibility belongs);
+APPROVED the slug rename (asset_ids re-derived — the hash folds `client_id`, so this is a
+migration, not a string swap) and a new `ingested_at` provenance column (additive, distinct
+from the audit-only `load_ts`). Owner separately confirmed the DAG/script design is genuinely
+not hardcoded — `client_id` flows through `CLIENT_ID` env / DAG `--conf` per run, multi-client
+intact. Owner also caught that the rename default (`voltecx` as a fallback) was itself a
+multi-client misroute risk → `_sources.yml`'s `env_var('CLIENT_ID', 'voltecx')` fallback was
+**removed** (now fails loud: `env_var('CLIENT_ID')`, no default); same for the DAG `Param`
+(now `""`, `minLength=1`, REQUIRED). CI sets `CLIENT_ID=voltecx` explicitly so the no-default
+`env_var` still parses there.
+
+**Two new automated governance contracts appeared this session** (`architecture/
+LINEAGE_CONTRACT.md` + `tests/lineage_contract.py`; `architecture/BOUNDARY_CONTRACT.md` +
+`tests/boundary_contract.py`; `.claude/hooks/governance_guard.py` + `.claude/settings.json`; a new
+"🛑 STOP-GATE" section in this repo's `CLAUDE.md`) — rules-as-code mirroring this project's
+existing GE-suite philosophy: lineage (asset_id formula, path/column consistency, no
+placeholder `client_id`) and stack/scope boundaries (no Spark/MinIO/vector-DB/RAG/dashboard
+imports) are now enforced on every Edit/Write (hook) and every CI run, not just reviewed.
+`demo_client` is recorded `GRANDFATHERED`→now resolved (no rows use it; denylist stays).
+
+**Drive folder reorganized mid-run** into `1-edited_video/2-winning_video/3-raw_video`
+subfolders — `_list_videos()` was non-recursive (only saw files directly under the top
+folder) and would have landed 0 videos; fixed to walk the tree recursively. "Winning ads"
+ruled **EDITED**, not a third `asset_type` value — @data-architect: a winning ad is still
+physically an edited cut; "which one won" is a performance signal with no ratified v1 home
+(CLAUDE.md keeps ad-performance OUT of v1) — conflating the two axes would violate Clean-ERD
+domain purity. `_infer_asset_type()` now matches `edited`/`winning`/`winners` → `EDITED`.
+
+**Three real bugs found and fixed (not just the planned work):**
+1. `seeds/asset_manifest.csv` mixed CRLF (Python `csv.DictWriter`'s RFC-4180 default) against
+   an LF header → DuckDB's CSV sniffer failed outright ("could not detect dialect", reported
+   0 columns). Fixed at the source: `_append_manifest_row` now passes `lineterminator="\n"`.
+2. `dbt_project.yml`'s seed `+column_types` for `asset_manifest` still listed 8 columns after
+   `ingested_at` was added as a 9th — caused the same sniffer failure independently. Fixed.
+3. The local `target/dev.duckdb` catalog (ADR-005: ephemeral/compute-only by design) held a
+   stale 8-column `asset_manifest` table from before the schema change; `dbt seed` does
+   `TRUNCATE`+`COPY`, not `CREATE OR REPLACE`, so the new column never had anywhere to land
+   until the catalog file was deleted and rebuilt fresh.
+
+**Verified for real, not just parse-clean:** `dbt build -s +marts.core` → PASS=24 ERROR=0;
+`dim_client` 1 row; `dim_asset` 19 rows (14 EDITED/5 RAW, matching the real subfolder split);
+`fact_chunk` **131 real chunks** (3–18 per video) across the 13 extracted assets, from real
+Malay-language automotive ad transcripts, correct `chunk_theme`/`sentiment`/`standalone_score`;
+both contracts green.
+
+**Open, time-gated (not a bug) — RESOLVED 2026-06-24, see "Gemini quota resume" below:** 6/19
+assets still needed Gemini extraction at this checkpoint — blocked on the free-tier
+`generate_content_free_tier_requests` quota (20/day for `gemini-2.5-flash`), confirmed
+HARD-DAILY (backoff-retried, didn't help). Owner chose to wait for the daily reset rather than
+enable billing. Missing asset_ids as of this checkpoint: `afbe9bb2…`, `f41426ce…`, `da4a31f7…`,
+`bd8e89dc…`, `9965df85…`, `2e757f1e…` (full hashes in `seeds/asset_manifest.csv`) — all 6 done now.
+
+## Gemini quota resume — 2026-06-24 (13/19 → 19/19, contracts green)
+Quota reset as predicted; resumed the exact command from the 2026-06-22 checkpoint.
+
+**One more real bug found (not part of the planned work):** `source venv/bin/activate` alone
+does not load `.env` — there is no `python-dotenv` call anywhere in the scripts and no
+documented `source .env` step, so a fresh shell has `google-genai`/`boto3` on `PATH` but
+`os.getenv("S3_BUCKET")` etc. all empty. First extraction attempt failed fast and loud on all
+6 assets (`env_guard: S3_BUCKET unset - refusing to run` — exactly the fail-closed behavior
+`scripts/env_guard.py`'s docstring promises, not a hang or a silent wrong-bucket write). Fixed
+by exporting the file before invoking the script: `set -a && source .env && set +a`. Not a
+code change — this checkpoint is the fix (a documented resume step), since `scripts/env_guard.py`
+already does its one job correctly; the gap was upstream of it, in how the venv-activate step
+is documented. Worth wiring a `python-dotenv` load (or a `source .env` line in the quickstart)
+if this trips up the next resume too.
+
+**Verified for real, not just parse-clean:** all 6 extractions exit 0 (idempotent, asset-grain
+Bronze written to S3 per `scripts/run_gemini_extract.py`'s contract); `dbt build -s +marts.core`
+→ PASS=24 ERROR=0; `dim_asset` **19 rows** (14 EDITED/5 RAW, same subfolder split as before);
+`fact_chunk` **169 real chunks** across all **19** distinct assets (queried directly off
+`target/dev.duckdb`, not just dbt's own PASS count); `tests/lineage_contract.py` and
+`tests/boundary_contract.py` both green.
 
 ## Cabinet convene — 2026-06-22 (roster ruling)
 Convened all 6 core agents on: unified-S3 storage, ERD/DDL, the conformance/bridge principle,
@@ -148,8 +258,9 @@ the full chain was tested for real, not just parse-checked:
   `bronze/<client_id>/...`), and manifest-row lookup by full dict (not just `source_uri`) so
   `content_sha256` is available separately from `asset_id`.
 - **Build-time bug found and fixed (not part of the ADRs themselves):** the data-architect's
-  `models/marts/core/dim_client.sql` wrapper model shared its name with `seeds/dim_client.csv`
-  → dbt "two resources, identical database representation" collision. Fixed by deleting the
+  `dim_client.sql` wrapper model (in `models/marts/core/`, since deleted — see fix below) shared
+  its name with `seeds/dim_client.csv` → dbt "two resources, identical database representation"
+  collision. Fixed by deleting the
   wrapper (1:1 passthrough with zero transform — same bare-seed pattern already used for
   `dim_platform`) and moving its column tests into `_core.yml`'s `seeds:` key.
 - **Seed fixture rename:** `seeds/dim_client.csv` / `asset_manifest.csv` originally used a
@@ -170,16 +281,466 @@ the full chain was tested for real, not just parse-checked:
   is fully real and tested at the CLI/function level; wiring it into Airflow is a clean follow-up
   once the orchestration venv exists.
 
+## 5th LLM-output gate (non-triviality / completeness-floor) — BUILT 2026-06-25 (@data-quality-steward)
+DQD.md §3 item 1 / `PROJECT_STATUS.md` finding #2, closed. The gap: a schema-valid-but-empty
+`{"chunks": []}` Gemini response passed all 4 pre-existing gates untouched, because
+`stg_gemini_raw.sql`'s `unnest()` of an empty array produces **zero rows** for that asset — it
+silently disappears before reaching any Silver-layer row a later gate could test. Fix: a
+`dbt_expectations.expect_column_values_to_be_between` test (`min_value: 1`) on the **source**
+column `bronze_asset_raw.chunk_count`, added in `models/staging/_sources.yml` (the GE JSON spec
+at `great_expectations/expectations/bronze_asset_raw.json` line 12 already declared this check —
+this just builds it). `config: {severity: warn, store_failures: true}` — deliberately not
+`error`, per DQD.md §1 gate 1's own action-on-failure rule ("quarantine, never blocks batch"): a
+failing row lands in dbt's audit-trail failures table for review, doesn't fail `dbt build`'s
+exit code over one bad asset. No new quarantine-table model invented — `store_failures` is the
+existing dbt-native mechanism. DQD.md (§1 gate table renumbered 0–4, §2, §3, Sign-off Gate) and
+`great_expectations/README.md` updated to match.
+**Verified for real, not just parse-clean:** `dbt build -s +marts.core` against the real 19-asset
+S3 data → new test `dbt_expectations_source_..._chunk_count__1` **PASS** (all 19 real assets have
+chunk_count ≥ 1, as expected — this gate exists to catch *future* empty-chunk responses, not a
+known-bad row today); full build PASS=25 ERROR=0 WARN=0, nothing pre-existing broke.
+**Noted, not fixed (pre-existing, unrelated to this change):** dbt 1.10 deprecation warning on
+the `relationships` tests in `_core.yml`/`_performance.yml` ("top-level arguments... should be
+nested under `arguments`") — 7 occurrences, cosmetic, doesn't fail the build. Flagging for a
+future cleanup pass, out of scope here.
+
+## v1 search/mix-and-match demo — BUILT + RUN FOR REAL 2026-06-25 (@senior-data-engineer)
+ADR-004/SPEC_v1_search.md gate closed — this demo must ship BEFORE v1.5, and until now
+`analyses/demo_queries.sql` was a literal `select 'see SPEC §8' as todo` placeholder. Owner
+directed running it now, before touching v1.5, against the real 19-asset/169-chunk voltecx Gold
+data (first real-data run of this spec).
+
+**Built:**
+- `scripts/search_cli.py` — leg (a) search (`--theme --sentiment --min-score --contains`) + leg
+  (b) `--assemble` (fixed 3-step Hook→Body→CTA, chains the 2-step join twice per SPEC §3.3,
+  `--hook-theme`/`--limit` overrides). Opens `target/dev.duckdb` read-only — no new direct-S3
+  connection path (ADR-005's S3-serving veneer is v1.5+, not this CLI's job).
+- `analyses/assemble_sequence.sql` — leg (b) 2-step reference query (SPEC §3.2), compiles clean
+  (`dbt compile -s assemble_sequence`).
+- `analyses/demo_queries.sql` — leg-(a) slot replaced with the real §2.2 query adapted to real
+  values (see finding below); the other two slots (Hook-rate correlation, mine-unused-raw-chunks)
+  left as named TODO/blocked-on-v1.5 — they need `fact_ad_performance` rows that don't exist yet.
+- `models/marts/core/_core.yml` — added the missing `bridge_chunk_compatibility.chunk_id`
+  relationships test (no-orphan-compat, SPEC §4 row 5; that model had no YAML block at all before).
+- `tests/assert_assemble_sequence_standalone_safe.sql` — new singular test (SPEC §4 row 6,
+  assembler safety). **First attempt was wrong and caught by the build itself**: an initial
+  version asserted no `chunk_theme='Hook'`-adjacent pair in the raw `bridge_chunk_compatibility`
+  graph has `standalone_score < 4` on either side — that's too strong a claim (the graph
+  legitimately contains edges to low-score chunks; the assembler's own `>= 4` filter is what's
+  supposed to exclude them before a marketer sees them), and it correctly FAILED (38 rows) on the
+  real data. Fixed to re-run the actual assembler predicate (mirrors `assemble_sequence.sql`'s
+  `where` clause) and assert zero violations make it past that filter — now PASSes.
+
+**Real `dbt build -s +marts.core` result:** PASS=27 ERROR=0 WARN=0 (was PASS=25 before this
+task's 2 new tests; +2 tests, both green).
+
+**Real CLI output, leg (a)** (`--theme Problem --sentiment frustrated --min-score 4 --contains
+minyak` — picked real high-volume values, not the spec's literal `chunk_theme='Hook'`/`'jimat
+elektrik'`, neither of which occur meaningfully in real data, see finding below): 6 clips
+matched, all genuine frustrated-sentiment "makin berat, makan minyak" engine-wear complaints
+across 5 distinct assets, ranked by `standalone_score`.
+
+**Real CLI output, leg (b)** (`--assemble`, default `--hook-theme Hook`): 5 candidate
+Hook→Body→CTA sequences, all `standalone_score >= 4` at every hop, genuinely **cross-asset**
+(e.g. Sequence 2: HOOK from asset `fc8c253c…`, BODY from `0419274e…`, CTA from `2fb2beb5…` — three
+different source videos stitched by theme-compatibility, not by timestamp) — this is the
+anti-Frankenstein north-star working on real footage, not synthetic fixtures. Also spot-checked
+`--hook-theme Solution --limit 2` and a no-match case (`--theme NoSuchTheme` → clean "No clips
+matched.", no crash).
+
+**Finding for the record — `chunk_theme` vocabulary drift (named, NOT fixed here, correctly out
+of scope):** 50 distinct freeform `chunk_theme` strings across 169 chunks — Gemini's free-text
+output, not a controlled vocabulary (e.g. `'How It Works'` vs `'How it works'` case variants,
+seen live during this task's `--hook-theme Solution` spot-check; `'Benefit'`/`'Benefits'`/
+`'Benefit Demonstration'`/`'Benefit Showcase'` near-duplicates). Exact-match filtering on
+`chunk_theme` (both the spec's S1 pattern and the assembler's adjacency join) is fragile against
+this drift — a real marketer query for `'Benefit'` silently misses `'Benefits'` rows. This is
+squarely @data-architect/@data-quality-steward territory (extraction-prompt redesign or a new
+normalization/enum-constraining gate), not something patched unilaterally while building a demo
+CLI. Routes there if/when picked up.
+
+**Named, still-open gap (not fixed, per DQD.md §3 convention of naming gaps honestly):** SPEC §4's
+"search smoke" row (golden CLI test against seed fixtures) has no seed-fixture framework in this
+repo today — `seeds/` holds real production seeds (`dim_client.csv` etc.), not test fixtures.
+Building that framework is explicitly separate, bigger work (DQD.md §1 gate 3), not done here.
+
+**Scope discipline:** did not touch `models/marts/performance/`, `significance_post_step.py`,
+`stg_meta_perf.sql`/`stg_tiktok_perf.sql`, `seeds/map_ad_asset.csv`, any v1.5 doc, or the
+`chunk_theme` extraction prompt/gate logic — all explicitly out of scope for this task.
+
+## Airflow orchestration wiring — BUILT + RUN FOR REAL 2026-06-25 (ADR-008)
+Owner asked to actually run the DAG, not just keep it parse-clean. New ADR written first
+(`architecture/ADR-008-airflow-orchestration-wiring.md`) since this was genuinely undecided
+implementation territory — DATA_MODEL.md §8 / STACK_AND_FLOW.md §2 ratified the high-level
+pattern (Pool, dynamic mapping, skip-existing, deferrable wait) but never specified how the
+task bodies should actually call the real scripts.
+
+**Built:** Airflow 2.10.3 installed into its own isolated `venv_airflow/` (never the shared
+`venv/` — avoids any risk to the real scripts' pinned deps). All 5 of `dags/
+creative_intel_pipeline.py`'s TODO stub bodies wired to real behavior: `sync_drive_to_landing`
++ `extract_chunks` shell out to `venv/bin/python scripts/{ingest_drive_to_s3,run_gemini_extract}.py`
+(cross-venv subprocess, `.env` loaded via a small in-DAG parser); `list_new_assets` calls new
+`scripts/list_unextracted_assets.py` (manifest seed minus real S3 Bronze keys — fills the
+TODO the stub named); `dbt_build_marts`'s `BashOperator` now actually sources `venv/`+`.env`
+first (same gap PROJECT_STATUS.md named 2026-06-24); `ge_validate` runs the two real
+governance contracts (lineage + boundary) — documented as NOT a literal GE checkpoint, which
+doesn't exist yet (`tests/GATES.md` "Open"); `refresh_serving` is an honest no-op for both
+backends today (no VSS/Cortex pipeline exists yet) — full rationale + rejected alternatives in
+ADR-008.
+
+**Verified for real, not just parse-clean:** `airflow dags test creative_intel_pipeline_v1
+2026-06-25 -c '{"client_id":"voltecx","drive_folder_id":""}'` → **DagRun SUCCESS**.
+`sync_drive_to_landing` really ran (`landed 0 new asset(s)`, correct — blank folder = re-scan);
+`list_new_assets` really ran `list_unextracted_assets.py` against real S3, found **zero**
+unextracted assets (all 19 already done) and raised a real `AirflowSkipException` — **cost
+firewall #2 proven live in Airflow**, not just claimed in a docstring; downstream tasks
+correctly SKIPPED via trigger-rule propagation, not failed. The skip cascade meant
+`dbt_build_marts`/`ge_validate`/`refresh_serving` weren't exercised in that run, so each was
+also verified individually via `airflow tasks test`: `dbt_build_marts` → real `dbt build -s
+marts.core`, PASS=21 ERROR=0; `ge_validate` → real `✅ lineage contract OK` +
+`✅ boundary contract OK`; `refresh_serving` → honest no-op string, as designed.
+`tests/doc_reference_contract.py` re-run clean against the new ADR + DAG + CLAUDE.md changes.
+CLAUDE.md's "Architecture of Record" ADR list was also missing ADR-006/007 (pre-existing gap,
+unrelated to this task) — fixed in the same pass, now lists through ADR-008.
+`.gitignore` gained `airflow_home/` (the new metadata-db/logs directory `venv_airflow/` writes
+to — was already gitignored itself, `airflow_home/` was the one gap).
+
+**Named, not solved (per ADR-008 "Bounded"):** literal GE checkpoint execution and DuckDB
+VSS/Snowflake Cortex refresh remain open — `ge_validate`/`refresh_serving` will need rewiring
+once those land, not retroactively claimed done here.
+
+**Trigger-rule fix, same day:** the default Airflow trigger rule (`all_success`) meant a clean
+"nothing new to extract" run skipped `dbt_build_marts`/`ge_validate`/`refresh_serving` too, even
+though none of them depend on anything being newly extracted. Added `trigger_rule="none_failed"`
+to `await_gemini_processing`/`dbt_build_marts`/`ge_validate`/`refresh_serving`. Re-verified for
+real: one single `airflow dags test` run now goes all the way through all 6 tasks to SUCCESS —
+`sync_drive_to_landing` (real, 0 landed) → `list_new_assets` SKIPPED (real, 0 unextracted,
+**zero Gemini calls** — confirms the cost firewall holds even when nothing downstream is
+gated on it) → `await_gemini_processing`/`dbt_build_marts` (real `dbt build -s marts.core`,
+PASS=21 ERROR=0) → `ge_validate` (real lineage+boundary) → `refresh_serving` (honest no-op),
+all SUCCESS in one DagRun.
+
+**Airflow UI — live, for visual access:** `airflow standalone` started (webserver+scheduler+
+triggerer), reachable via the Codespace's forwarded port 8080 (PORTS tab in VS Code). Owner
+asked to actually see the run, not just trust CLI output.
+
+## Operational notifications — BUILT 2026-06-25 (ADR-009): Slack alerts + Confluence doc sync
+Owner asked for: (1) Slack alert on pipeline failure (clarified scope, asked directly: Airflow
+task failures only — not CI, not budget, both named OUT for this pass) and (2) Confluence
+publishing of project docs (clarified scope, asked directly: doc publishing, not a second
+alert channel). Real Confluence space confirmed by owner mid-build: `luqman10.atlassian.net/
+wiki/spaces/NSL/...` — the SAME space already hosting the sibling `pharma_novartis_sttm`
+project's AH/STTM/ERD pages. Page-structure decision (new parent page vs. folding into NSL's
+existing pharma pages, naming to avoid collision) — addressed directly to the owner, not
+buried here; see chat.
+
+**Built:**
+- `dags/creative_intel_pipeline.py` — `_notify_slack_failure`, wired as DAG-level
+  `on_failure_callback` (fires for any task, not just one). stdlib `urllib.request` only — no
+  new dependency in `venv_airflow` (kept minimal per ADR-008). Missing `SLACK_WEBHOOK_URL` is a
+  graceful no-op (logs a warning, never raises) — credentials filled in later, by design.
+- `scripts/sync_docs_to_confluence.py` (new) — Markdown → Confluence storage-format HTML
+  (`markdown` package) for `PROJECT_STATUS.md` + all 23 `architecture/*.md` docs (24 total),
+  create-or-update by title lookup (never duplicates a page), Confluence Cloud Basic Auth.
+  `--dry-run` renders + lists all pages with zero API calls and zero credentials required.
+- `requirements.txt` += `requests`, `markdown`. `.env.example` += `SLACK_WEBHOOK_URL`,
+  `CONFLUENCE_{BASE_URL,EMAIL,API_TOKEN,SPACE_KEY,PARENT_PAGE_ID}` (all blank — owner fills in).
+- `architecture/ADR-009-slack-alerts-and-confluence-doc-sync.md` (new) — full Decision/
+  Rationale/Rejected-alternatives/Consequences, per the owner's standing rule that an addendum
+  gets the same rigor as a full ADR ([[adr-addendum-parity]] memory).
+
+**Verified for real, not just parse-clean (no real credentials exist yet, so this is the
+honest ceiling today):** `python scripts/sync_docs_to_confluence.py --dry-run` → renders all
+24 docs to HTML, lists every page title, zero API calls, zero credentials needed. Real run
+(no `--dry-run`, no env vars set) → fails loud and exact: `missing required env var(s):
+CONFLUENCE_BASE_URL, CONFLUENCE_EMAIL, CONFLUENCE_API_TOKEN, CONFLUENCE_SPACE_KEY,
+CONFLUENCE_PARENT_PAGE_ID — refusing to run` (mirrors `scripts/env_guard.py`'s fail-closed
+convention). `tests/boundary_contract.py` + `tests/doc_reference_contract.py` both re-run clean
+against the new ADR/DAG/script. DAG still parses clean after the callback addition.
+
+**Credentials filled in + gone fully live, same day:** owner created the real Confluence space
+(`CI`, homepage id `1802415`) and filled `.env`. Read-only auth check first (space + parent page
+GET, both 200) before any write. Slack: real test POST to the real webhook → `200 ok`, a
+visibly-marked test message (not a real pipeline alert). Confluence: real (non-dry-run) sync →
+**all 24 pages created** under the new homepage, each with a real Confluence page id (e.g.
+PROJECT_STATUS=1900545, ADR-005=1736707, DATA_MODEL=1802491 — full id list in chat). Re-running
+the script will now update these by title lookup, not duplicate them (ADR-009 §B).
+
+**Bounded (per ADR-009, not done here):** not wired into CI or the DAG as an automated trigger
+yet — manual-run-only until it has succeeded once with real credentials (ADR-009 rejected
+alternative #4). CI alerts and budget alerts to Slack are named OUT, not silently expanded into.
+
+## Silver/Gold S3 materialization — FIXED 2026-06-25 (completion-plan item 1, the BLOCKER)
+Confirmed the gap for real first (not from stale context): a live `boto3` listing showed
+`silver/` and `gold/` prefixes at **0 keys** while `landing/`/`bronze/` had data — `dbt_project.yml`
+materialized marts as local `table`/`view` in `target/dev.duckdb` only, contradicting ADR-005's
+"Gold S3 = sole source of truth."
+
+**Built:** Silver (`int_chunk_cleaned`) + Gold `marts.core` (all 7 models) now materialize as
+dbt-duckdb **`external` parquet on real S3**. New `macros/s3_external.sql` builds the
+client-partitioned path `s3://<bucket>/<layer>/<model>/<CLIENT_ID>/<model>.parquet`, called from
+each model's `config(location=...)`. `marts.performance` deliberately left as `table` (item 4 —
+perf data mode unconfirmed). Full decision + rationale: **ADR-005 Addendum (2026-06-25 #2)**.
+
+**Decision corrected (owner-confirmed this session):** the completion plan's item 1 below loosely
+recommended **un-partitioned** `gold/<model>/*.parquet`. That is **wrong for this pipeline** —
+`external` overwrites its location each run and bronze is read one client per run (ADR-006), so
+un-partitioned would make a second client's build **clobber** the first's Gold parquet. Owner
+chose **client-partitioned** (model-first). Tenancy is path-level (`env_var('CLIENT_ID')`), not a
+column — `fact_chunk` has no `client_id` (Clean-ERD axis 4), so DuckDB-native `partition_by` can't
+apply; mirrors `landing/<client_id>/` + `bronze/<client_id>/`.
+
+**Verified for real, not just dbt's PASS count:** `dbt build -s +marts.core` → **PASS=27 ERROR=0
+WARN=0**; a fresh independent `boto3` listing shows **8 real parquet objects** now under
+`silver/`/`gold/` (was 0); a fresh **httpfs** read of each reconciles exactly against the dbt
+logical view counts for the 6 non-stub models (`fact_chunk` 169, `int_chunk_cleaned` 169,
+`dim_asset` 19, `bridge_chunk_compatibility` 363, `dim_keyword_bridge` 924, `dim_theme_bridge`
+169). lineage + boundary contracts green; `REPO_MAP.md` regenerated (110 files, `--check` OK).
+
+**Carried-forward finding (Snowflake serving, item 3 — named, not fixed here):** the two `where
+1=0` stubs (`bridge_asset_lineage`, `fact_extraction_run`) write a 1-row all-NULL parquet
+(dbt-duckdb pads empty models); dbt's view filters it to 0 but a **raw** reader sees 1 phantom
+row. ADR-005's reconciliation test must read consistently (both raw or both null-filtered) or it
+false-positives on these two. Detail in ADR-005 Addendum #2.
+
+**Regression caught + fixed in the same session (a real bug in this fix itself, not a separate
+item):** making Silver/Gold unconditionally `external` broke the existing $0/no-cloud CI golden
+test (`tests/golden/run_golden_test.py`, already in `ci.yml`) — it builds `+fact_chunk` under
+dbt's `golden_test` target with a literal placeholder `S3_BUCKET=unused-golden-test-placeholder`
+(by design: proves `fact_chunk` VALUES are correct using a local fixture, zero real cloud calls).
+`external` materialization doesn't care what target it's under — it tried to write/read that fake
+bucket and 404'd. Caught only because the full CI-mirror gate suite was run before declaring item
+2 done, not because it was anticipated. **Fixed properly, not patched around:** new
+`silver_gold_config(layer, name)` macro (`macros/s3_external.sql`) makes the *materialization
+itself* target-aware — plain local `view` under `golden_test`, real `external` S3 otherwise — and
+`fact_chunk.sql`'s new embedding `LEFT JOIN` is wrapped the same way (skipped entirely under
+`golden_test`, since that fixture has no embedding data and the golden test doesn't assert on that
+column). All 8 Silver/Gold models + `dbt_project.yml`'s now-empty `marts.core: {}` updated to
+match. **Verified for real after the fix:** golden test → `GOLDEN TEST OK — 3 fact_chunk row(s)
+match`; real `dev`-target build unaffected → `dbt build -s +marts.core` PASS=36 ERROR=0; embedding
+column still 169/169 non-null; `--semantic` search still returns identical real results. Full
+CI-mirror re-run clean end-to-end: ruff, py_compile, `dbt parse`+`seed` (placeholder env), golden
+test, lineage, boundary, doc-reference (+self-test), repo-map, adr-coupling (+self-test) — all
+green.
+
+## DuckDB VSS embedding pipeline — BUILT 2026-06-25 (completion-plan item 2)
+ADR-005 §B's "$0 fallback proven first" gate, before Snowflake. Discovered the prior checkpoint's
+claim that `embedding` was "already reserved/nullable on fact_chunk" was **aspirational, not
+built** — `fact_chunk.sql` had no such column. SPEC_v1_search.md §1 / ERD_consolidated.md had
+already pre-ratified the design (reserve now, populate in v1.5, "no model change needed to add
+it later") — implementing it was not a fresh architecture decision.
+
+**Built:**
+- `scripts/generate_embeddings.py` — reads Silver (`int_chunk_cleaned`) directly via httpfs,
+  embeds each chunk's `transcript_segment` with Gemini `gemini-embedding-001`
+  (`output_dimensionality=768`, `task_type=RETRIEVAL_DOCUMENT`), content-hash-gated idempotent
+  (sha256 of the transcript text — re-running re-embeds only changed/new chunks), writes
+  `gold/chunk_embedding/<client_id>/chunk_embedding.parquet` (fixed-width `FLOAT[768]`, required
+  for VSS HNSW). New `gold` source block in `models/staging/_sources.yml`.
+- `models/marts/core/fact_chunk.sql` — `LEFT JOIN` to the new `gold.chunk_embedding` source,
+  surfacing `embedding` as nullable (matches the SPEC's reserved/nullable contract for any chunk
+  not yet embedded).
+- `scripts/search_cli.py`'s new `--semantic "<query>"` mode — embeds the query (`task_type=RETRIEVAL_QUERY`,
+  same model/dim), builds an **ephemeral in-memory DuckDB VSS HNSW index** per invocation (cheap
+  at this row count, no persistent index file to go stale), ranks by `array_distance`.
+- **Real quota finding (not a bug in the idempotency logic):** `embed_content_free_tier_requests`
+  is metered **per-minute** (100/min) and, empirically, **per content item** — a single batch
+  call with 100 texts exhausted it in one shot. Unlike `generate_content`'s confirmed
+  HARD-DAILY quota (2026-06-22/24 checkpoints), this one genuinely recovers with backoff — added
+  retry-on-429 (parses the API's own `retryDelay`) + smaller `BATCH_SIZE=20`.
+
+**Verified for real, not just code review:**
+- Real run: **169 new chunks embedded** (one 429 backoff-retry, then through) →
+  `gold/chunk_embedding/voltecx/chunk_embedding.parquet`, 532911 bytes, real S3 object confirmed
+  via `boto3` listing.
+- **Idempotency re-run: 0 new, 169 cached, zero API calls** — re-running made no Gemini calls.
+- `dbt build -s +marts.core` → **PASS=29 ERROR=0 WARN=0** (was 27; the new `gold.chunk_embedding`
+  unique/not_null source test is +1, fact_chunk grain unchanged).
+- Fresh httpfs read of `fact_chunk`: **169/169 rows have a non-null `embedding`, dim=768** exactly
+  (not a sample — `count(*) = count(embedding) = 169`).
+- `--semantic` real output, two real runs: (1) `"kereta makin berat dan makan minyak"` (Malay,
+  near-literal) → top-5 all genuine "makin berat, makan minyak" engine-wear complaints across 5
+  distinct assets, ascending distance, correctly ranked. (2) `"car feels sluggish and burns more
+  fuel than before"` (English paraphrase, **zero literal word overlap** with the Malay transcripts)
+  → top-3 still correctly retrieved the same complaint cluster plus one genuinely topically-related
+  ECU/spark-plug/fuel-combustion chunk — proves this is real semantic retrieval, not keyword
+  matching in disguise.
+- Governance: lineage ✓, boundary ✓ (VSS is a DuckDB extension, not a banned "vector DB" service —
+  pre-cleared by ADR-005 §B itself), `REPO_MAP.md` regenerated (111 files, `--check` OK),
+  doc-reference contract OK (24 docs), adr-coupling OK (9 structural changes, ADR touched same
+  change — no ADR addendum needed here since SPEC_v1_search.md §1 already pre-ratified this exact
+  build; SPEC_v1_search.md amended in-place with the "BUILT" evidence instead).
+
+**Bounded (not done here):** Snowflake Cortex Search (item 3) is the *other* surface for this same
+embedding column — out of scope until item 3's own workstream. `DATA_DICTIONARY.md` and
+`ERD_consolidated.md` updated in-place to mark `embedding` BUILT (was "(v1.5)" reserved-only).
+
+## Smaller named gaps (completion-plan item 5) — 2026-06-25
+
+**DONE — EDL→`bridge_ad_chunk` row-count reconciliation (DQD.md §3 item 2, HIGH).** New
+`tests/assert_edl_bridge_ad_chunk_reconciles.sql` — anti-join singular test, returns any
+`edit_decision_list` row that `bridge_ad_chunk`'s inner join would silently drop. Real
+`dbt test` PASS against the genuine (currently empty) EDL seed. **Honest gap:** a live
+red/green adversarial proof (inject one bad row, confirm FAIL, revert) was attempted and the
+harness's own permission classifier blocked it as risky local file destruction — did not retry
+through another tool to work around that. Correctness rests on the anti-join idiom being
+structurally sound, not on a demonstrated failing-then-passing run. Flagging honestly rather
+than overclaiming. DQD.md §3 item 2 updated DONE with the same caveat.
+
+**DONE — `silver_chunk` GE suite, built + run for real (was spec-only, never wired).** New
+`models/intermediate/_intermediate.yml` on `int_chunk_cleaned`: `chunk_id` not-null+unique,
+`standalone_score` 1–5, `chunk_theme` not-null, `sentiment` enum (all `warn`+`store_failures`,
+mirroring DQD.md §1 gate 2's "quarantine, do not retry" convention) + table row-count ≥ 1
+(`error` — a structural canary, not a per-row LLM-quality issue, so not downgraded). Real
+`dbt build -s int_chunk_cleaned` against the real 169-row Silver layer → **PASS=7/7**; full
+`dbt build -s +marts.core` re-run clean after → PASS=36 ERROR=0. DQD.md §2 suite table updated.
+
+**ASSESSED, NOT IMPLEMENTED — `dbt build` in CI.** `.github/workflows/ci.yml`'s own header
+states intent: "Static gates only — $0, no cloud, no secrets." Today only `dbt parse`+`dbt seed`
+run (placeholder `S3_BUCKET`/`CLIENT_ID`, no real cloud call). Adding `dbt build -s +marts.core`
+would need real AWS credentials as GitHub Actions secrets — on a `pull_request`-triggered
+workflow, that's real S3 access exposed to CI for any PR, a genuine security/access-grant
+decision, not an implementation detail. **Not done; needs explicit owner sign-off** (the
+completion plan named this exact requirement — "flag to owner first").
+
+**NAMED, NOT FIXED (re-confirmed current, not re-litigated) — `chunk_theme` vocabulary drift.**
+Still **50 distinct freeform strings across the same 169 chunks** (no new extraction ran this
+session, so unchanged is expected, not stale). Remains @data-architect/@data-quality-steward
+territory per the 2026-06-25 search-demo finding — not unilaterally fixed here either.
+
+**ASSESSED, NOT IMPLEMENTED — Airflow `schedule=None` → `@daily`.** `dags/
+creative_intel_pipeline.py:135` still manual-trigger-only, comment already names the `@daily`
+option. Flipping it would make Airflow autonomously trigger Drive scans + Gemini extraction
+calls on a timer, unattended — a real cost/automation decision (this pipeline's whole FinOps
+posture elsewhere is "provisioning stays owner-gated"), not a default to silently flip. **Not
+done; needs explicit owner confirmation.**
+
+## v1.5 performance marts — smoke-tested + reverted, 2026-06-25 (completion-plan item 4)
+The "synthetic-to-prove-the-pipe, smoke-test-then-revert" precedent the prior checkpoint
+referenced **did not exist in git history** (checked via `git log -p`) — re-asked the owner
+fresh instead of repeating a pattern that was never real. Owner chose: synthetic smoke-test,
+then revert (not a permanent fixture, not waiting for real exports).
+
+**What was proven:** `models/marts/performance/*.sql` (`bridge_ad_chunk`, `fct_ad_kpi`,
+`int_metric_chunk_alignment`, `fct_ad_metric_chunk`, `mart_chunk_perf_correlation`) +
+`scripts/significance_post_step.py` were already fully written, just never run against any data.
+Built a temporary synthetic dataset (REAL `chunk_id`/`asset_id` values from the real 169-chunk
+Gold data, synthetic `ad_id`s prefixed `SYNTH_TEST_` and synthetic impressions/clicks/spend,
+deliberately separated by design — 12 `'Problem'`-chunk ads at ~60–64% hook_rate, 10
+`'Call to Action'`-chunk ads at ~30–34% hook_rate, both on `platform='meta'`):
+- `seeds/edit_decision_list.csv` + `seeds/map_ad_asset.csv` — temporarily populated (22 rows
+  each), via the Edit/Write tool, not raw shell redirection.
+- One synthetic Bronze parquet written directly to the **real** (but genuinely empty —
+  confirmed via `boto3` before writing) `bronze/voltecx/ad_performance_raw/` S3 path, since
+  `_sources.yml` has no `golden_test`-style override for this source yet.
+
+**Real results:** `dbt build -s +marts.performance` → **PASS=49 ERROR=0** (every model in the
+chain built correctly, including the time-anchored vs. role-anchored alignment logic in
+`int_metric_chunk_alignment` — `'Problem'` ads, `chunk_role='body'`, correctly got **zero**
+`ctr_link` rows since that metric is role-anchored to `chunk_role='cta'`, while `'Call to
+Action'` ads, `chunk_role='cta'`, correctly did). G3 sample-size regime gating worked exactly as
+specced: 10 ads → `DIRECTIONAL`, 12 ads → `SUGGESTIVE`. `scripts/significance_post_step.py`
+(dry-run, then real write-back) computed a genuine Mann-Whitney p-value for `hook_rate`/`Problem`
+vs. rest: **p=0.000175, is_significant=True** — correctly detecting the by-construction signal;
+`hold_rate_25` correctly came back non-significant (an unintentional same-ratio-for-everyone
+quirk in the synthetic data, not a bug — proves the degenerate-identical-values guard in the
+script works too). Real write-back to `mart_chunk_perf_correlation` verified by an independent
+query against `target/dev.duckdb` after the script ran.
+
+**Fully reverted, verified for real, not just "ran git checkout":**
+1. `seeds/edit_decision_list.csv` / `seeds/map_ad_asset.csv` — back to header-only, `git diff`
+   confirms zero diff vs. committed state.
+2. Synthetic S3 object deleted; a fresh `boto3` listing confirms **0 objects** remain under
+   `bronze/voltecx/ad_performance_raw/`.
+3. Local ephemeral `target/dev.duckdb` (ADR-005: never source of truth, gitignored) fully
+   deleted and rebuilt fresh from scratch — confirmed `mart_chunk_perf_correlation` doesn't even
+   exist on the rebuilt catalog (not just empty) before the next real run recreates it.
+4. Re-ran `dbt build -s +marts.core` (PASS=36 ERROR=0) and `dbt build -s +marts.performance`
+   (PASS=38 ERROR=2 SKIP=9 — **the exact same 2 pre-existing `stg_meta_perf`/`stg_tiktok_perf`
+   "no files match" failures as before this experiment**, proving the baseline is genuinely
+   restored, not just "looks empty."
+
+**No real Meta/TikTok exports exist yet** — this proved the pipe is correct, it did not unblock
+v1.5 for real use. Still waiting on real performance data; nothing committed or persisted to S3
+Gold claims otherwise.
+
 ## Next step when resuming (v1 path — build feature store FIRST, serve AFTER it has rows)
-1. **Test with a real Drive folder** (the owner's own footage) — set `DRIVE_FOLDER_ID` +
-   `GOOGLE_APPLICATION_CREDENTIALS` in `.env`, run `python scripts/ingest_drive_to_s3.py`, then
-   `python scripts/run_gemini_extract.py <asset_id>` per landed asset, then `dbt build -s +marts.core`.
-   This is the first real end-to-end run — everything above was tested with synthetic fixtures.
-2. Wire Great Expectations suites incl. the 5th non-triviality gate (finding #2, still open).
-3. v1.5: performance marts + significance post-step + semantic search — DuckDB VSS first ($0),
-   then Snowflake Cortex veneer once Gold has real rows + teardown plan (ADR-005 sequencing).
-4. Wire the DAG's stub tasks to the now-real scripts (`ingest_drive_to_s3.py`,
-   `run_gemini_extract.py`, `enforce_landing_ttl.py`) once Airflow is actually installed.
+
+**Done, 2026-06-22 → 2026-06-25** (see dated sections above for evidence per item): all 19/19
+real assets extracted; 5th GE non-triviality gate; v1 search/mix-and-match demo (both legs, real
+data); Airflow orchestration wired + run for real (ADR-008); Slack alerts + Confluence doc
+publishing (ADR-009, 24 pages live in Confluence space `CI`); ADR-005 amended (day-25 Snowflake
+teardown lifted — see "Addendum (2026-06-25)" in that ADR).
+
+**Master completion plan, approved by owner 2026-06-25 — for whoever resumes this (a fresh
+session is expected — this checkpoint exists precisely so that session doesn't need this one's
+history):**
+
+> **Scope boundary (do not exceed):** v1 gap-closure + v1.5 (performance marts + significance +
+> semantic search), exactly as already scoped by `SPEC_v1.5_performance_marts.md` /
+> `SPEC_v1_search.md` / ADR-004/005. **v2 BACKLOG stays OUT** — AI search engine, RAG generator,
+> creative-ops dashboard, auto-tagging, full ROAS connector ingestion, dedicated vector DB.
+
+1. ✅ **DONE 2026-06-25 — Fix Silver/Gold S3 materialization** (see "Silver/Gold S3 materialization
+   — FIXED" section above for evidence; owner chose **client-partitioned**, not the un-partitioned
+   layout this item originally suggested — that would clobber across clients). Original note kept
+   below for context. ~~Confirmed via
+   direct S3 listing 2026-06-25: `silver/`/`gold/` prefixes are **completely empty** (0 keys) —
+   `dbt_project.yml` materializes them as plain `view`/`table` (local `target/dev.duckdb` only),
+   contradicting ADR-005's ratified "Gold S3 = sole source of truth." Fix: convert to
+   dbt-duckdb `external` materialization with `external_location`, mirroring the env-var-
+   templated pattern already proven in `models/staging/_sources.yml`. **Decision needed before
+   coding, flag to owner/@data-architect, don't silently pick:** Gold path convention —
+   un-partitioned per model (`gold/<model>/*.parquet`) is the natural fit, since Gold tables
+   span all clients (client scoping is row-level via FK per ADR-006), unlike client-partitioned
+   Bronze. Verify with a real `boto3` S3 listing showing real parquet objects, not just dbt's
+   own PASS count — and a row-count reconciliation between the local catalog and a fresh
+   `httpfs` read of the S3 parquet.~~
+2. ✅ **DONE 2026-06-25 — DuckDB VSS embedding pipeline** (see "DuckDB VSS embedding pipeline —
+   BUILT" section above for evidence). The "already reserved/nullable on fact_chunk" claim below
+   was found to be aspirational, not built — added for real this pass. ~~Already-cleared v1.5
+   scope (`SPEC_v1_search.md` §1). New script (e.g. `scripts/generate_embeddings.py`): BYO Gemini
+   embeddings per chunk, content-hash-gated idempotency, writes the `embedding` column already
+   reserved/nullable on `fact_chunk`. `INSTALL vss; LOAD vss;` + HNSW index. Extend
+   `scripts/search_cli.py` with a `--semantic` mode (same output shape as the existing
+   `--theme`/`--sentiment`/`--contains` path). Verify with real embeddings over the real 169
+   chunks + an eyeball check that nearest-neighbor results make sense on real Malay transcript
+   content.~~
+3. **Snowflake Cortex serving (after 1 and 2 land).** `.env`'s `SNOWFLAKE_WAREHOUSE`/
+   `SNOWFLAKE_DATABASE`/`SNOWFLAKE_ROLE` are still blank — fill before connecting (account/user/
+   password already set). External tables over the now-real `gold/` S3; Cortex Search over the
+   BYO-embedding column (never Cortex `EMBED_TEXT` — ADR-005 §B, single embedding surface only).
+   Build the row-count+key reconciliation test ADR-005 names as the spine boundary. `COST_LOG.md`
+   still wanted as a monitoring record (the 2026-06-25 addendum lifted the day-25 teardown
+   countdown, not cost visibility). Provisioning stays owner-gated — confirm before any `CREATE`.
+4. ✅ **DONE 2026-06-25 — see "v1.5 performance marts — smoke-tested + reverted" section below
+   for full evidence.** ~~v1.5 performance marts — re-confirm data mode with the owner before
+   building further. Owner has been directing this turn-by-turn (synthetic-to-prove-the-pipe,
+   smoke-test-then-revert, not a permanent Gold substitute — see "v1.5 performance marts" section
+   + the significance post-step, both done 2026-06-25). Don't assume the same call applies again
+   without asking — confirm whether to repeat smoke-test-and-revert, keep a clearly-labeled
+   permanent demo fixture, or wait for real Meta/TikTok exports.~~ **Correction:** the referenced
+   prior "v1.5 performance marts" section / precedent did not actually exist anywhere in git
+   history when checked this session — re-asked the owner fresh rather than repeating a pattern
+   that was never real.
+5. ✅⚠️ **2026-06-25 — see "Smaller named gaps (completion-plan item 5)" section above.** 2/5
+   DONE for real (EDL reconciliation test, `silver_chunk` GE suite); 3/5 assessed and
+   deliberately NOT implemented because they need an owner decision, not a default (CI secrets,
+   Airflow `@daily`, chunk_theme drift design). ~~Smaller named gaps, independent/parallelizable:
+   EDL→`bridge_ad_chunk` row-count reconciliation (`DQD.md` §3 item 2, HIGH); `silver_chunk` GE
+   suite never executed against real data (mirror the gate-0 `chunk_count` pattern already built
+   this session); `dbt build` itself not in CI (only `parse`+`seed` — needs real AWS secrets in
+   GitHub Actions, flag to owner first); `chunk_theme` vocabulary drift (50 near-duplicate
+   freeform strings — routes to @data-architect/@data-quality-steward for a real design call,
+   don't unilaterally pick an approach); Airflow schedule (`schedule=None` today, manual-only —
+   confirm if `@daily` is ever wanted).~~
+6. **Keep Confluence in sync** — re-run `python scripts/sync_docs_to_confluence.py` after each
+   workstream lands (create-or-updates by title, never duplicates).
+
+**Verification posture (carry forward, don't relax):** every item above needs real evidence
+(command output, row counts, real S3/Confluence/Snowflake listings) next to the DONE claim in
+this file — not parse-clean, not dry-run-only. This is the same standard every checkpoint above
+already held itself to.
 
 ## Standalone status
 Self-contained — see audit in chat 2026-06-22. CLAUDE.md + 8 agents + setup.sh + CI all present;

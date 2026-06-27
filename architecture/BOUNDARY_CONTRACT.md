@@ -48,7 +48,7 @@ still rejects — it does not ban the performance marts themselves.
 python tests/boundary_contract.py
 ```
 - **CI:** `.github/workflows/ci.yml` → "Boundary contract" gate (PR + push to main).
-- **Hook:** `.claude/hooks/lineage_guard.py` auto-runs it after edits to `scripts/`, `dags/`,
+- **Hook:** `.claude/hooks/governance_guard.py` auto-runs it after edits to `scripts/`, `dags/`,
   `models/`, `requirements*.txt`, `setup.sh`, or `profiles.yml.example`, and blocks on failure.
 
 ## Changing a rule

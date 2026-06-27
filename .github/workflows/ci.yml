@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # ADR-coupling gate needs the base ref reachable for git diff
 
       - uses: actions/setup-python@v5
         with:
@@ -21,7 +23,7 @@ jobs:
       - name: Install tooling
         run: |
           python -m pip install --upgrade pip
-          pip install ruff dbt-duckdb
+          pip install ruff dbt-duckdb pandas
 
       - name: Lint (ruff)
         run: ruff check scripts/ tests/ .claude/hooks/
@@ -37,6 +39,11 @@ jobs:
           # CLIENT_ID has NO default in _sources.yml (fail-loud multi-client guard) — parse
           # renders env_var('CLIENT_ID') so CI must set it. Any valid seeded slug works.
           CLIENT_ID: voltecx
+          # S3_BUCKET also has no default (same fail-loud pattern) — _sources.yml's
+          # external_location Jinja renders at PARSE time, before any model actually runs,
+          # so even `dbt parse`/`dbt seed` need a value even though no real S3 call happens.
+          # Placeholder is safe: no read/write is issued at parse/seed time.
+          S3_BUCKET: ci-placeholder-bucket
         run: |
           cp profiles.yml.example profiles.yml
           dbt deps
@@ -46,13 +53,32 @@ jobs:
         env:
           DBT_PROFILES_DIR: ${{ github.workspace }}
           CLIENT_ID: voltecx
+          S3_BUCKET: ci-placeholder-bucket
         run: dbt seed
+
+      - name: Golden dataset test (fact_chunk VALUE correctness, not just shape)
+        run: python tests/golden/run_golden_test.py
 
       - name: Lineage contract (ADR-006 — manifest fidelity)
         run: python tests/lineage_contract.py
 
       - name: Boundary contract (ADR-001/004/005 + v1 scope)
         run: python tests/boundary_contract.py
+
+      - name: Doc-reference contract (no model/path drift in architecture docs)
+        run: python tests/doc_reference_contract.py
+
+      - name: Doc-reference contract self-test (the gate is itself tested)
+        run: python tests/test_doc_reference_contract.py
+
+      - name: Repo-map freshness (navigation index matches ground truth)
+        run: python scripts/gen_repo_map.py --check
+
+      - name: ADR-coupling contract (structural governed change ⇒ ADR in same diff)
+        run: python tests/adr_coupling_contract.py origin/main
+
+      - name: ADR-coupling self-test (the gate is itself tested)
+        run: python tests/test_adr_coupling_contract.py
 
       - name: Validate Great Expectations JSON (if any)
         run: |

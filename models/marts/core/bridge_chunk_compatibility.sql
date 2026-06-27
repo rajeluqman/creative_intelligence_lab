@@ -1,4 +1,5 @@
 -- Mix-and-match adjacency. Explodes next_compatible_themes[].
+{{ config(**silver_gold_config('gold', 'bridge_chunk_compatibility')) }}
 select
     chunk_id,
     unnest(next_compatible_themes) as compatible_theme,

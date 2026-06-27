@@ -174,8 +174,11 @@ def _existing_manifest_ids() -> set[str]:
 
 def _append_manifest_row(row: dict) -> None:
     is_new_file = not MANIFEST_PATH.exists()
+    # lineterminator="\n": csv.writer defaults to "\r\n" (RFC 4180), which mismatches an
+    # LF-only header (e.g. hand-edited or written by a plain text editor) and breaks DuckDB's
+    # CSV dialect sniffer on mixed line endings ("could not detect parsing dialect").
     with MANIFEST_PATH.open("a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=MANIFEST_COLUMNS)
+        writer = csv.DictWriter(f, fieldnames=MANIFEST_COLUMNS, lineterminator="\n")
         if is_new_file:
             writer.writeheader()
         writer.writerow(row)

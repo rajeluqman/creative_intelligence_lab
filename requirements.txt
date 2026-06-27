@@ -9,3 +9,5 @@ scipy>=1.11
 boto3>=1.34
 tqdm>=4.66
 ruff>=0.6
+requests>=2.31         # Confluence doc sync (scripts/sync_docs_to_confluence.py, ADR-009)
+markdown>=3.6           # Confluence doc sync — Markdown -> storage-format HTML (ADR-009)

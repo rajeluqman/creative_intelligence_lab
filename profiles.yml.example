@@ -7,3 +7,8 @@ creative_intelligence:
       path: "target/dev.duckdb"     # ephemeral local catalog
       extensions: [httpfs, parquet]
       # settings: {s3_region: "ap-southeast-1"}   # add for real S3 reads
+    golden_test:
+      # tests/golden/ — local-only, $0, no S3 (see _sources.yml's target.name=='golden_test' branch).
+      type: duckdb
+      path: "target/golden_test.duckdb"
+      extensions: [parquet]

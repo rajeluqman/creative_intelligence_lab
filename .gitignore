@@ -4,6 +4,7 @@ secrets/
 venv/
 venv_airflow/
 .venv/
+airflow_home/
 target/
 dbt_packages/
 logs/

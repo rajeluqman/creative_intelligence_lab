@@ -16,10 +16,53 @@ sources:
       # if/when multi-tenant backfill across clients in a single build is actually needed.
       - name: bronze_asset_raw
         meta:
-          external_location: "s3://{{ env_var('S3_BUCKET') }}/bronze/{{ env_var('CLIENT_ID') }}/asset_raw/*.parquet"
+          # golden_test target (tests/golden/) points this at a local fixture parquet instead
+          # of S3 — proves stg_gemini_raw's unnest/chunk_id logic against known-expected values,
+          # $0/no-cloud (CI-safe). Every other target is untouched: identical S3 path as always.
+          external_location: >-
+            {% if target.name == 'golden_test' %}{{ var('golden_bronze_path') }}{% else %}s3://{{ env_var('S3_BUCKET') }}/bronze/{{ env_var('CLIENT_ID') }}/asset_raw/*.parquet{% endif %}
+        # 5th LLM-output gate (non-triviality / completeness-floor) — DQD.md §3 item 1 / GE
+        # spec great_expectations/expectations/bronze_asset_raw.json line 12. A schema-valid
+        # `{"chunks": []}` Gemini response passes gates 1-4 (DQD.md §1) untouched because
+        # stg_gemini_raw.sql's unnest() of an empty array yields zero rows for that asset —
+        # it silently vanishes before any Silver-layer row exists to test. chunk_count is
+        # stamped at Bronze write time (scripts/run_gemini_extract.py, asset grain) precisely
+        # so this can be caught here, one boundary earlier than every other gate.
+        # severity: warn + store_failures: true (NOT error) is deliberate: DQD.md §1 gate 1's
+        # documented action-on-failure is "quarantine, never blocks batch" — an empty-chunks
+        # asset must be logged/auditable, not allowed to fail dbt build's exit code and halt
+        # the whole run over one bad asset.
+        columns:
+          - name: chunk_count
+            tests:
+              - dbt_expectations.expect_column_values_to_be_between:
+                  min_value: 1
+                  config:
+                    severity: warn
+                    store_failures: true
       # Verbatim Meta/TikTok CSV (immutable, v1.5). No writer script exists yet (flagged in
       # run_gemini_extract.py's own header) — path follows the same bronze/<client_id>/<table>/
       # convention so it's ready the moment a landing script for perf CSVs is built.
       - name: bronze_ad_performance_raw
         meta:
           external_location: "s3://{{ env_var('S3_BUCKET') }}/bronze/{{ env_var('CLIENT_ID') }}/ad_performance_raw/*.parquet"
+  - name: gold
+    schema: gold
+    tables:
+      # BYO Gemini embeddings, written by scripts/generate_embeddings.py (NOT a dbt model — same
+      # "Python writes the external artifact, dbt sources it" pattern as bronze_asset_raw above).
+      # Persisted in Gold per ADR-005 §B ("generated in the ELT and persisted in Gold S3" — this
+      # is a derived enrichment of fact_chunk, not a raw immutable capture, so it does not belong
+      # in Bronze). Content-hash-gated idempotent (cost discipline item 3: no re-embed on
+      # unchanged chunks). fact_chunk.sql LEFT JOINs this by chunk_id to surface the `embedding`
+      # column SPEC_v1_search.md §1 / ERD_consolidated.md reserved as nullable in v1 — no new
+      # client_id column anywhere (Clean-ERD axis 4; reached via dim_asset, same as always).
+      - name: chunk_embedding
+        meta:
+          # Inlined (not the s3_external() macro): _sources.yml's meta-field Jinja context does
+          # not expose project macros the way a model's config() block does — confirmed by a
+          # 's3_external' is undefined compilation error when this was {{ s3_external(...) }}.
+          external_location: "s3://{{ env_var('S3_BUCKET') }}/gold/chunk_embedding/{{ env_var('CLIENT_ID') }}/chunk_embedding.parquet"
+        columns:
+          - name: chunk_id
+            tests: [unique, not_null]

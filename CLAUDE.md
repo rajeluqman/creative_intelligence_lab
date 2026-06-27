@@ -25,6 +25,63 @@ This gate is enforced three ways so it cannot be skipped: this prompt (soft), th
 CI `tests/lineage_contract.py` + `tests/boundary_contract.py` (blocks the PR). Governance is
 code, not vigilance.
 
+## 🔁 ANTI-SHORTCUT PROTOCOL — read-before-touch, reconcile-before-done
+The #1 way work goes wrong here is the *shortcut*: writing code or a claim from in-context
+memory instead of from the file as it is NOW. Context goes stale after an edit and in long
+threads. These four rules apply to EVERY edit, claim, and "done" — each is observable in the
+transcript, so a skipped step is visible, not a matter of trust:
+1. **Read-before-touch** — never edit or assert about a file from memory. Read it THIS turn
+   first. (The migration-map class of bug is always this rule skipped.)
+2. **Enumerate, don't sample** — for any "all N" task, get N from ground truth (`ls`/`grep`/
+   manifest) BEFORE acting, then re-count after. N_before must equal N_after.
+3. **Reconcile-before-done** — before saying done/fixed/green, restate the request as a
+   numbered checklist with evidence (command output / `file:line`) per item. No evidence =
+   say "unverified", not "done". Run the actual gate; don't declare on a parse-clean.
+4. **Tag assumptions** — any load-bearing claim not checked this turn is marked "(unverified)".
+
+The machine half (so this doesn't depend on anyone remembering): `tests/doc_reference_contract.py`
+proves every model/path a doc references actually exists — point it at a MIGRATION_MAP / spec
+before trusting it (`python tests/doc_reference_contract.py <file.md>`). Same philosophy as the
+lineage/boundary contracts: code does not get tired, and code does not write from memory.
+
+The *navigation* half: `architecture/REPO_MAP.md` is a generated pointer index (file → purpose →
+uses → used-by) so "what is X / what touches X" is one cheap read, not a whole-repo token burn.
+It is 100% derived (`python scripts/gen_repo_map.py`; CI runs `--check` and fails if stale), so
+it cannot drift — an ad-hoc change that shifts the import/`ref()` graph turns the gate red until
+the index moves with it. **It is a pointer, not a cache: it tells you which file to open, then you
+READ THAT FILE FRESH** (rule 1) before editing or asserting. Trusting the index without opening the
+file is just the stale-cache bug at larger scale.
+
+**Drafting & teaching aid (cikgu):** skeleton-first is encouraged — write intent as a numbered
+pseudocode comment block, THEN fill in code ("programming by intention"). It forces what+why
+before how. BUT: that scaffold is a thinking tool — before commit, strip comments that merely
+restate WHAT the code obviously does (comment-rot); keep only WHY/non-obvious ones, matching the
+sparse-comment house style. Do NOT make "comment every block" a commit rule.
+
+## 🗣️ Conversational language (ADR-011, rescoped by Addendum 2026-06-27)
+**Narration defaults to plain English; artifacts always English.** Manglish narration is now
+**opt-in** — use Malaysian Technical Manglish only when the owner asks for it in-session (the
+Manglish-first default was repealed; in practice it drifted into Indonesian-sounding output the
+owner found unreadable). When Manglish *is* requested, follow the voice spec in ADR-011 §B
+(`aku`/`kau`, markers `lah`/`je`/`ni`/`tu`, BM structure + English technical terms, no
+Indonesian/formal-BM drift). `@cikgu` stays English-first teaching, Manglish as the Layer-2 unblock.
+Full spec + the rescope rationale: `architecture/ADR-011-conversational-language-protocol.md`.
+
+## 💸 Token-efficiency & session discipline (ADR-012 — operating protocol)
+Cut redundancy, never the guardrails (the anti-shortcut protocol + gates above are what make
+cost-cutting safe — rework is the worst burn). Full detail + the measured baseline/projection:
+`architecture/ADR-012-token-efficiency-and-session-discipline.md`. The load-bearing habits:
+- **Model routing:** @data-architect (Opus) only for the 6 Clean-ERD doctrine calls; minor rulings
+  → @scope-guardian/Sonnet or a gate. Batch related cabinet questions into one spawn.
+- **Subagents for verbose, *independent* work only.** Coupled work (e.g. SDE→DQ→SDE gate-loops)
+  stays on the main thread — splitting it loses shared state AND costs ~7× in reloads.
+- **Gate over re-read:** for any "is this consistent?" check, run the contract (≈0 tokens,
+  deterministic) instead of re-reading files. Cheapest-gate-first, fail fast.
+- **Session guard (Lever 6):** watch the Claude Context Bar — yellow (50–75%) = finish the current
+  unit + keep `PROJECT_STATUS.md` "▶ RESUME HERE" current; **red (>75%) = checkpoint + start a fresh
+  session** (before the ~80% auto-compact). Resume cheap: read the RESUME-HERE block, not all of
+  PROJECT_STATUS. Assistant writes the next-session prompt into that block at the breakpoint.
+
 ## Project Overview
 **Domain**: Advertising / creative-ops intelligence
 **Problem**: Turn messy raw ad video (a client's Google Drive folder of near-duplicate
@@ -67,6 +124,9 @@ DBT_DAG.md, SPEC_v1_search.md, SPEC_v1.5_performance_marts.md; the doc-gap set a
 - ADR-003 — chunking in Silver
 - ADR-004 — performance-veto converted
 - ADR-005 — unified S3 storage + Snowflake Cortex serving veneer (owner override, no MinIO)
+- ADR-006 — multi-client tenancy (`dim_client` + tenant-scoped asset identity)
+- ADR-007 — landing TTL (guarded hard-delete @ 30 days)
+- ADR-008 — Airflow orchestration wiring (isolated `venv_airflow/` + cross-venv script invocation)
 
 **Governance gate:** @data-architect holds ULTIMATE VETO and enforces the **Clean-ERD
 Doctrine** on every model change — 1 table = 1 grain = 1 business entity · no mixed-domain

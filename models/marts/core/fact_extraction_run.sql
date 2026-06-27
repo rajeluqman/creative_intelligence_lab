@@ -1,4 +1,5 @@
 -- Operational telemetry (enhancement): tokens/cost/latency/confidence.
+{{ config(**silver_gold_config('gold', 'fact_extraction_run')) }}
 select
     cast(null as varchar) as run_id,
     asset_id,

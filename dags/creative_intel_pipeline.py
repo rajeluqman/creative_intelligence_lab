@@ -14,17 +14,40 @@ without a synchronous per-video polling loop that would pin worker slots:
 
 Run model: manual trigger with config (recommended) — e.g.
   airflow dags trigger creative_intel_pipeline_v1 \
-    --conf '{"client_id": "acme", "drive_folder_id": "1AbC..."}'
+    --conf '{"client_id": "voltecx", "drive_folder_id": ""}'
 Or set `schedule="@daily"` to poll while Airflow is up (Codespace = on-demand, not 24/7).
 
-Bodies are stubs (TODO) wired to the real scripts/dbt; the GRAPH + patterns are real and
-parse-clean. Verify: `python -c "from airflow.models import DagBag; \
+ADR-008 (2026-06-25, architecture/ADR-008-airflow-orchestration-wiring.md): this DAG runs in
+its OWN isolated `venv_airflow/` (Airflow's dependency set
+is notoriously strict-pinned and would otherwise collide with `venv/`'s google-genai/boto3/
+dbt-duckdb/scipy stack). Task bodies below therefore shell out to `venv/bin/python <script>`
+rather than importing the real scripts directly — Airflow's process never imports boto3 or
+google-genai, it only invokes the already-verified-for-real CLI scripts as subprocesses. This
+keeps the two dependency sets fully isolated and means wiring this DAG could never regress the
+real, already-tested pipeline scripts' own dependencies.
+
+Bodies are now wired to the real scripts (was: TODO stubs). `ge_validate` and `refresh_serving`
+are honest partial-no-ops where the thing they'd call doesn't exist yet — see their docstrings
+and tests/GATES.md "Open" section; this DAG does not fabricate behavior for unbuilt gates.
+Verify: `python -c "from airflow.models import DagBag; \
 assert not DagBag('dags').import_errors, DagBag('dags').import_errors"`.
+
+ADR-009 (2026-06-25, architecture/ADR-009-slack-alerts-and-confluence-doc-sync.md): any task
+failure posts to Slack via `_notify_slack_failure` (DAG-level `on_failure_callback`, fires for
+every task automatically). Uses stdlib `urllib.request` only — `venv_airflow` stays dependency-
+minimal per ADR-008. Missing/empty `SLACK_WEBHOOK_URL` is a graceful no-op (logs a warning),
+never a second failure stacked on the real one.
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
+import re
+import subprocess
+import urllib.request
 from datetime import timedelta
+from pathlib import Path
 
 import pendulum
 from airflow.decorators import dag, task
@@ -34,7 +57,77 @@ from airflow.models.param import Param
 from airflow.operators.bash import BashOperator
 from airflow.sensors.time_delta import TimeDeltaSensorAsync
 
+log = logging.getLogger(__name__)
+
 GEMINI_POOL = "gemini_api"  # create in Airflow: `airflow pools set gemini_api <QPM_budget> "..."`
+
+REPO_DIR = Path(__file__).resolve().parent.parent
+VENV_PYTHON = str(REPO_DIR / "venv" / "bin" / "python")
+
+
+def _load_dotenv() -> dict[str, str]:
+    """Minimal `.env` parser for the subprocess env below — intentionally not a new
+    `python-dotenv` dependency (none of the real scripts use one either; PROJECT_STATUS.md's
+    2026-06-24 entry already named this exact gap: `source venv/bin/activate` alone does not
+    load `.env`). Airflow's own process never needs these vars; only the subprocess calls into
+    `venv/`'s real scripts do."""
+    env_path = REPO_DIR / ".env"
+    values: dict[str, str] = {}
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            values[key.strip()] = val.strip()
+    return values
+
+
+def _run_real_script(args: list[str], extra_env: dict[str, str] | None = None) -> str:
+    """Cross-venv invocation (see module ADR-addendum note above): shells out to
+    `venv/bin/python` rather than importing — Airflow's `venv_airflow` never needs boto3/
+    google-genai/dbt-duckdb, and the real scripts never need Airflow's deps."""
+    env = {**os.environ, **_load_dotenv(), **(extra_env or {})}
+    result = subprocess.run(
+        [VENV_PYTHON, *args], cwd=str(REPO_DIR), env=env, capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"{args[0]} failed (exit {result.returncode}):\nSTDOUT:\n{result.stdout}\n"
+            f"STDERR:\n{result.stderr}"
+        )
+    return result.stdout
+
+
+def _notify_slack_failure(context: dict) -> None:
+    """ADR-009 on_failure_callback — fires for ANY task failure in this DAG (wired via
+    default_args below, not per-task, so a future 6th task is covered automatically).
+
+    Graceful no-op if SLACK_WEBHOOK_URL is unset/empty (credentials filled in later, per the
+    owner) — alerting being unconfigured must never raise a second failure on top of the real
+    one. Uses stdlib urllib only: this runs in venv_airflow, kept dependency-minimal (ADR-008)."""
+    webhook = _load_dotenv().get("SLACK_WEBHOOK_URL") or os.environ.get("SLACK_WEBHOOK_URL", "")
+    if not webhook:
+        log.warning("SLACK_WEBHOOK_URL not set — skipping Slack alert (credentials not filled in yet)")
+        return
+
+    ti = context["task_instance"]
+    text = (
+        f":red_circle: *Airflow task failed*\n"
+        f"*DAG:* `{ti.dag_id}`  *Task:* `{ti.task_id}`\n"
+        f"*Run:* `{context['run_id']}`\n"
+        f"*Client:* `{context['params'].get('client_id', '?')}`\n"
+        f"<{ti.log_url}|View logs>"
+    )
+    body = json.dumps({"text": text}).encode("utf-8")
+    req = urllib.request.Request(
+        webhook, data=body, headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            log.info("Slack alert sent (status %s)", resp.status)
+    except Exception as e:  # noqa: BLE001 — alerting must never raise into the task's own failure handling
+        log.warning("Slack alert failed to send: %s", e)
 
 
 @dag(
@@ -56,6 +149,7 @@ GEMINI_POOL = "gemini_api"  # create in Airflow: `airflow pools set gemini_api <
         "retry_delay": timedelta(seconds=30),
         "retry_exponential_backoff": True,
         "max_retry_delay": timedelta(minutes=10),
+        "on_failure_callback": _notify_slack_failure,  # ADR-009
     },
     tags=["creative-intelligence", "v1"],
 )
@@ -68,63 +162,110 @@ def creative_intel_pipeline():
         asset_id and is NOT re-uploaded. Returns the count of NEW videos landed."""
         params = context["params"]
         client_id, folder = params["client_id"], params["drive_folder_id"]
-        # TODO: scripts/ingest_drive_to_s3.py — pull `folder`, hash bytes, write
-        #   s3://$S3_BUCKET/landing/<client_id>/video/<sha256>.<ext>; skip if the hash already exists.
-        _ = (client_id, folder)
-        return 0  # number of new assets landed this run
+        if not client_id:
+            raise ValueError("client_id param is required — multi-client misroute guard")
+        out = _run_real_script(
+            ["scripts/ingest_drive_to_s3.py"],
+            extra_env={"CLIENT_ID": client_id, "DRIVE_FOLDER_ID": folder},
+        )
+        print(out)
+        m = re.search(r"landed (\d+) new", out)
+        return int(m.group(1)) if m else 0
 
     @task
     def list_new_assets(**context) -> list[str]:
         """Step 2 — return only asset_ids in landing whose Bronze JSON does NOT yet exist.
 
-        The second cost firewall — never re-call Gemini on an already-extracted asset."""
+        The second cost firewall — never re-call Gemini on an already-extracted asset.
+        Real query (was: hardcoded DEMO_ASSET_IDS stub) via scripts/list_unextracted_assets.py
+        — manifest seed minus real S3 bronze_asset_raw keys for this client_id."""
         client_id = context["params"]["client_id"]
-        candidates = os.getenv("DEMO_ASSET_IDS", "rawhash001,rawhash002").split(",")
-        already_processed: set[str] = set()  # TODO: query bronze_asset_raw by content hash (per client_id)
-        _ = client_id
-        new = [a for a in candidates if a not in already_processed]
+        out = _run_real_script(
+            ["scripts/list_unextracted_assets.py", client_id],
+            extra_env={"CLIENT_ID": client_id},
+        )
+        new = [line.strip() for line in out.splitlines() if line.strip()]
         if not new:
             raise AirflowSkipException("no new assets — nothing to extract")
         return new
 
     @task(pool=GEMINI_POOL, retries=5)
-    def extract_chunks(asset_id: str) -> str:
+    def extract_chunks(asset_id: str, **context) -> str:
         """One Gemini extraction per asset. The pool slot is the concurrency/rate-limit guard;
-        idempotent — re-running a processed asset is a no-op (skip-existing upstream)."""
-        # TODO: scripts/run_gemini_extract.py — structured output, stamp model/prompt version,
-        #       write verbatim to bronze_asset_raw, log tokens -> fact_extraction_run.
+        idempotent — re-running a processed asset is a no-op (skip-existing upstream, and
+        scripts/run_gemini_extract.py's own Bronze-exists check, belt-and-suspenders)."""
+        client_id = context["params"]["client_id"]
+        out = _run_real_script(
+            ["scripts/run_gemini_extract.py", asset_id],
+            extra_env={"CLIENT_ID": client_id},
+        )
+        print(out)
         return asset_id
 
     # Deferrable async wait: frees the worker slot while the API processes, instead of a
     # synchronous loop holding a slot for the whole upload+process duration.
+    # trigger_rule="none_failed" (ADR-008 addendum, 2026-06-25 — see "Trigger-rule fix" entry
+    # in PROJECT_STATUS.md): the default rule (all_success) means that when there is nothing
+    # NEW to extract, list_new_assets's AirflowSkipException cascades and skips everything
+    # downstream too — including dbt_build_marts, which has no dependency on anything being
+    # newly extracted; it should refresh Gold from whatever is ALREADY in Bronze/Silver every
+    # run. "none_failed" runs as long as nothing upstream actually FAILED — a skip doesn't
+    # block it. This also matters for the Gemini-quota-conscious case: a run with nothing new
+    # to extract still rebuilds/validates the existing real data, it doesn't just stop dead.
     await_processing = TimeDeltaSensorAsync(
-        task_id="await_gemini_processing", delta=timedelta(seconds=5)
+        task_id="await_gemini_processing",
+        delta=timedelta(seconds=5),
+        trigger_rule="none_failed",
     )
 
     # Silver -> Gold as external parquet on S3 (ADR-005). DuckDB compute, S3 storage.
+    # `set -a && source .env` is required here too (same gap PROJECT_STATUS.md named
+    # 2026-06-24: `source venv/bin/activate` alone does not export S3_BUCKET etc.).
     dbt_build = BashOperator(
         task_id="dbt_build_marts",
-        bash_command="cd {{ var.value.get('repo_dir', '.') }} && dbt build -s marts.core",
+        trigger_rule="none_failed",
+        bash_command=(
+            "cd {{ var.value.get('repo_dir', '" + str(REPO_DIR) + "') }} && "
+            "source venv/bin/activate && set -a && source .env && set +a && "
+            "dbt build -s marts.core"
+        ),
     )
 
-    @task
+    @task(trigger_rule="none_failed")
     def ge_validate() -> str:
-        """Run the Great Expectations suites (per-layer gates). Block promotion on CRITICAL fail."""
-        # TODO: run GE checkpoints over silver_chunk / fact_ad_performance / mart_chunk_perf_correlation.
-        return "ge ok"
+        """Per-layer quality gates, block promotion on CRITICAL fail.
 
-    @task
+        Honest scope (was: TODO calling a GE checkpoint that doesn't exist): literal Great
+        Expectations checkpoint execution against real data is a named open gap
+        (tests/GATES.md "Open" section — "GE suites authored but not executed against real
+        data in CI"). The dbt schema tests already ran inside dbt_build_marts above (the
+        5th-gate `chunk_count` check, FK/range/uniqueness tests — see _core.yml /
+        _sources.yml). What THIS task adds for real: the two governance contracts that gate
+        every build today. It does not fabricate a GE checkpoint call."""
+        out = _run_real_script(["tests/lineage_contract.py"])
+        print(out)
+        out = _run_real_script(["tests/boundary_contract.py"])
+        print(out)
+        return "lineage + boundary contracts green (literal GE checkpoint execution remains an open gap, tests/GATES.md)"
+
+    @task(trigger_rule="none_failed")
     def refresh_serving() -> str:
         """Step N — refresh the read-only serving veneer over the freshly-built Gold S3 (ADR-005).
 
         Gold S3 is the sole source of truth; this only refreshes the projection on top.
-          * SERVING_BACKEND=snowflake_cortex -> ALTER EXTERNAL TABLE ... REFRESH + Cortex Search sync.
-          * SERVING_BACKEND=duckdb_vss (default, $0) -> rebuild the VSS/HNSW index over Gold S3.
+        Honest no-op for both backends today (was: TODO fabricating a refresh call):
+          * duckdb_vss (default, $0) — no embedding/VSS pipeline exists yet (SPEC_v1_search.md
+            §1 rules vector search OUT of v1, v1.5 fast-follow, not yet built). v1's actual
+            serving surface is target/dev.duckdb itself, already refreshed by dbt_build_marts
+            above — there is no separate veneer to rebuild yet.
+          * snowflake_cortex — ADR-005's FinOps preconditions (COST_LOG + day-25 teardown +
+            $0 fallback proven + single-sourced embeddings) are not yet satisfied; this task
+            deliberately does not issue a live Snowflake call until they are.
         """
         backend = os.getenv("SERVING_BACKEND", "duckdb_vss")
-        # TODO: snowflake_cortex -> refresh external tables + Cortex Search service;
-        #       duckdb_vss -> rebuild HNSW index over s3://$S3_BUCKET/gold/...
-        return f"serving refreshed ({backend})"
+        if backend == "duckdb_vss":
+            return "no-op (duckdb_vss: no VSS index exists yet, v1.5 fast-follow — v1 serving = target/dev.duckdb, already refreshed by dbt_build_marts)"
+        return "no-op (snowflake_cortex: ADR-005 FinOps preconditions not yet satisfied)"
 
     landed = sync_drive_to_landing()
     new_assets = list_new_assets()

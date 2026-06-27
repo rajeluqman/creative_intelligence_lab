@@ -2,6 +2,7 @@
 -- parent_asset_id come from the manifest, NOT a literal (gap-check B3). ADR-002/003.
 -- The manifest is the system of record for asset identity; the ingestion script
 -- appends one row per landed video (RAW on arrival; EDITED when an ad cut lands).
+{{ config(**silver_gold_config('gold', 'dim_asset')) }}
 select
     asset_id,                 -- SHA-256(client_id ':' content_sha256) — tenant-scoped (ADR-006)
     client_id,                -- FK -> dim_client; tenancy boundary, NOT NULL

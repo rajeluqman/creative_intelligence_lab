@@ -113,7 +113,7 @@ actually happens at that hop; "verbatim" means explicitly no transform.
 | Hop | Detail |
 |-----|--------|
 | Source | `bronze_ad_performance_raw` |
-| Transform | `stg_meta` + `stg_tiktok` → union (`architecture/STACK_AND_FLOW.md` §2); raw counts only, no ratio derived here |
+| Transform | `stg_meta_perf` + `stg_tiktok_perf` → union (`architecture/STACK_AND_FLOW.md` §2); raw counts only, no ratio derived here |
 | `asset_id` join | Manual seed `map_ad_asset.csv` (`ad_id` → `asset_id`), enforced by a dbt `relationships` test — **not** a Gemini-derived field |
 
 ## Target: `dim_platform` (Gold)
