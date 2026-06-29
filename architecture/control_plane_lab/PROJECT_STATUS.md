@@ -18,8 +18,12 @@ MORE DESIGN Q&A, not build.
   range; port-philosophy-not-content; OPS gates; skeleton; 10 ADRs; 6 fasa; PAT hygiene).
 - `01_OPUS_DECISIONS.md` — 5 locked decisions + ops-focused agent roster + REJECTED list + governed-file map.
 - `02_SONNET_BUILD_KICKOFF.md` — paste-ready Sonnet prompt, 15 Fasa-1 deliverables + memory-seeding step.
-- `_source_to_port/` — gen_repo_map.py, doc_reference_contract.py, sync_docs_to_confluence.py
-  (bundled so the airflow workspace can port them — it has no CIL access).
+- `03_PIPELINE_SIDE_CONTRACT.md` — reciprocal contract: what each of the 5 pipeline repos must
+  carry (CLAUDE.md §Orchestration + ORCHESTRATION_CONTRACT.md) so the Claude inside them isn't
+  "blur" — closes the gap that the plan only specified the control-plane side. Transfer = committed
+  CLAUDE.md (memory is per-workspace, doesn't travel). REPO_REGISTRY = single source of truth.
+- `_source_to_port/` — gen_repo_map.py, doc_reference_contract.py, sync_docs_to_confluence.py,
+  governance_guard.py (bundled so the airflow workspace can port them — it has no CIL access).
 
 ## Locked decisions (2026-06-29)
 1. agent `@saboteur` · 2. start stack AWS/Glue · 3. TWO real cloud envs (staging+prod) ·

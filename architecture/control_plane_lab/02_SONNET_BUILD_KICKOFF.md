@@ -17,6 +17,14 @@
    - `_source_to_port/gen_repo_map.py`            → repo-map generator (adapt paths for this repo)
    - `_source_to_port/doc_reference_contract.py`  → doc-ref gate
    - `_source_to_port/sync_docs_to_confluence.py` → Confluence sync (gap #4 fix)
+   - `_source_to_port/governance_guard.py`        → CIL's pre/post-edit hook — PORT as the starting
+     point for deliverable #3 (adapt the governed-file map to `01_OPUS_DECISIONS §Governed-file
+     map`); do not rewrite from scratch.
+
+   Note: a 4th build-authority doc — `03_PIPELINE_SIDE_CONTRACT.md` — governs a SEPARATE, parallel
+   task (adding the orchestration contract to the 5 pipeline repos), NOT the Fasa-1 control-plane
+   scaffold below. Carry it in the folder; act on it per its own §6 sequencing, not as part of this
+   prompt.
 3. (No separate hunt needed — everything is in that one folder.)
 4. Confirm the Codespace secret `GH_AIRFLOW` is assigned to this repo (it is — PAT verified ADMIN
    on all 5 repos 2026-06-29).
