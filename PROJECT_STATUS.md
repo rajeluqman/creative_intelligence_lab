@@ -7,6 +7,14 @@
 > continue. Read this block, do the next step, expand into the dated sections below only for the
 > evidence you actually need.
 
+- **▶ NEWEST LIVE THREAD (2026-06-29) — CONTROL-PLANE AIRFLOW LAB (design):** a new repo
+  `airflow_dag_running_pipeline` = control-plane + teaching lab + live-chaos range orchestrating all
+  5 pipelines (CIL + the 4 retrofit repos) across AWS/Azure/Databricks/Snowflake. Fasa-0 Opus design
+  is COMPLETE in `architecture/control_plane_lab/` (00_MASTER_SPEC, 01_OPUS_DECISIONS,
+  02_SONNET_BUILD_KICKOFF + `_source_to_port/`). 5 decisions locked, PAT done (Codespace secret
+  `GH_AIRFLOW`). Owner has MORE design questions next session — do NOT rebuild, hunt gaps + answer.
+  **Resume:** read `architecture/control_plane_lab/PROJECT_STATUS.md "▶ RESUME HERE"`. Memory:
+  `control-plane-airflow-lab`. (The gym/RBC thread below is still valid but paused.)
 - **Paste-ready first prompt for next session:**
   `Read PROJECT_STATUS "▶ RESUME HERE". Product (v1/v1.5) has no open thread — gates green. The live thread is the TRAINING GYM inside the RBC SIMULATION LAB (simulation/). The pedagogy framework + 2 worked drills were built 2026-06-27 (Opus, Option 1). I want to either (a) RUN drill simulation/drills/T-L01_dup_pk.md or O-O01_full_scan.md with @cikgu as mentor — read simulation/CIKGU_DRILL_PROTOCOL.md + simulation/PEDAGOGY_PREFS.md FIRST, teach mental-model→ETL→bug→debug→syntax-LAST, gated answers in simulation/.solutions/ (do NOT reveal until I hypothesize); or (b) hand off to a Sonnet session to mass-produce drills T-L02..L10 + O-O02..O06 from the 2 templates via simulation/SONNET_KICKOFF_PROMPT.md. Run python simulation/check_isolation.py first.`
 - **TRAINING GYM — BUILT 2026-06-27 (Opus, Option 1), ready to train:**
