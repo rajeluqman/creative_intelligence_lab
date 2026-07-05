@@ -39,16 +39,23 @@
 4. **Gate:** row-count manifest per table (seeded vs source file), xwalk covers 100% of
    customers in all 4 systems, rebuild-from-scratch produces identical counts.
 
-### Fasa B — ingestion → Bronze
-1. Watermark extractors for Postgres/MSSQL (overlap window per R-26; watermark state stored
-   in the lake, not in code).
-2. File-drop pickup with manifest + quarantine (R-15/R-16).
-3. OBP client: token refresh, backoff, pagination-to-exhaustion, verbatim JSON (R-18…R-22).
-4. **Gate:** kill-and-rerun any extractor mid-run → no dupes, no gaps (idempotency proof).
+### Fasa B — ingestion → Landing → Bronze (4-layer, D-15)
+1. Extract into **LANDING** (transient, as-arrived): watermark extractors for Postgres/MSSQL
+   (overlap window R-26; watermark state in the lake, not code); file-drop pickup; OBP client
+   (token refresh, backoff, pagination-to-exhaustion, verbatim JSON, R-18…R-22).
+2. **Landing→Bronze PROMOTION GATE = transport integrity ONLY** (D-15): `_SUCCESS` present +
+   manifest/checksum match + pagination reconciled vs API totals + dedup redeliveries +
+   multi-file set complete → promote to **BRONZE** (permanent raw archive); else **quarantine**
+   in Landing, alert, Bronze untouched, pipeline continues on last-good Bronze. NO business
+   cleansing here — Bronze stays raw.
+3. **Gate:** (a) kill-and-rerun any extractor mid-run → no dupes, no gaps; (b) feed a partial/
+   truncated/duplicate arrival → it lands, fails promotion, is quarantined, and Bronze is
+   provably unchanged (the D-15 isolation proof).
 
-### Fasa C — Silver
+### Fasa C — Silver (Bronze→Silver = CONTENT quality, D-15)
 MERGE upserts (latest per PK), birth_number decode (R-12, unit-tested), OBP JSON flatten,
 PII masking (D-07), quarantine tables for R-03 orphans. **Gate:** DQ suite per the R-register.
+(Content quality lives HERE, never at the Landing→Bronze gate.)
 
 ### Fasa D — Gold + evidence
 Dims/facts/marts = exactly the BQ table, nothing more. `mart_pipeline_health` (BQ-10) is
@@ -66,7 +73,8 @@ Fabric is OUT of this project entirely (owner ruling — not on the resume; the 
 serves the separate home-credit-fabric-migration project instead).
 
 ## Stack (RATIFIED — D-01 Addendum #3)
-Compute = **Databricks** for ALL transform (Bronze→Silver→Gold), portable PySpark + Delta,
+Layers = **Landing → Bronze → Silver → Gold** (4-layer medallion, D-15).
+Compute = **Databricks** for ALL transform (Landing→Bronze→Silver→Gold), portable PySpark + Delta,
 **Unity Catalog** over S3 external locations. Storage = **S3** (`s3://<bucket>/banking/`), sole
 truth, reuse CIL bucket. Serving = **Snowflake** external tables over Gold + Power BI (Fasa E).
 Dev on local Spark / subset (free); canonical full runs on the **disposable Databricks trial**

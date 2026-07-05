@@ -167,6 +167,48 @@ ratified Databricks stack, D-01 Addendum #3):
   Determinism (D-03.4) means subset and full behave identically.
 - Why logged: so "why did you build it this way" is answerable from the record, not memory.
 
+## D-15 — Landing and Bronze are SEPARATE layers (4-layer medallion). Owner ruling 2026-07-05
+Reverses the earlier "3-layer, Bronze==Landing" note after the owner pushed with a correct
+argument. Layers = **Landing → Bronze → Silver → Gold**.
+- **Landing** = transient arrival zone (short TTL, e.g. 7 days). Data lands here exactly as it
+  arrives — including partial API pulls, interrupted CDC deliveries, duplicate/re-dropped SAP
+  files, truncated pagination. Messy by design.
+- **Bronze** = the permanent, trusted, complete raw archive. A partition is promoted
+  Landing → Bronze **only** once it passes the transport-integrity gate. Bronze is still raw
+  (no business cleansing) but is guaranteed transport-complete and exactly-once.
+
+**The load-bearing discipline — two gates judging two different things (do NOT conflate):**
+- **Landing → Bronze gate = TRANSPORT INTEGRITY only.** "Did I receive it completely and
+  exactly once?" — `_SUCCESS` marker present, manifest/checksum matches, pagination reconciled
+  vs API-reported totals, dedup of redelivered CDC / re-dropped files, multi-file set complete.
+  Fail → quarantine; Bronze untouched; pipeline continues on last-good Bronze.
+- **Bronze → Silver gate = CONTENT QUALITY only.** Orphan FKs, nulls, birth_number decode,
+  fraud-flag semantics, etc. Bad-but-intact rows MUST be in Bronze (it is the raw record).
+  If content cleansing creeps into the Landing→Bronze gate, Bronze stops being raw truth —
+  forbidden.
+
+**Why (kept for interview defense):**
+1. Isolation — a broken API pull or double-delivered CDC batch dies in Landing; Bronze and the
+   whole downstream pipeline never see it (owner's core argument — correct).
+2. **S3 has no atomic rename** — the "temp→rename" trick is not atomic on object storage
+   (rename = copy+delete). An explicit Landing→Bronze promotion (`_SUCCESS` + manifest
+   reconciliation) is the correct object-store substitute; "atomic write handles it" is weaker
+   on S3 than on a filesystem. This makes the split *more* necessary here, not less.
+3. Multi-file set consistency — Berka's 8 related tables / SAP header+detail: confirm the whole
+   SET arrived before ANY of it hits Bronze.
+4. Schema-drift firewall (R-16/R-28) — catch a changed SAP schema at Landing, quarantine before
+   it corrupts Bronze schema evolution.
+5. Raw-arrival audit/replay — inspect exactly what a source sent (incl. the bad stuff) separate
+   from the clean archive.
+6. **CDC future (strongest):** in Fasa C all four sources get transport artifacts (duplicate/
+   out-of-order events), not just file/API sources. Landing-as-transport-buffer future-proofs
+   the exact upgrade the project is built around.
+
+**Cost/discipline caveats:** Landing is transient (short TTL) so double-storage is trivial;
+the manifest+atomic-write mechanism was already being built for R-15 — this mostly promotes
+hidden code to an explicit, defensible layer. Canonical medallion folds Landing into Bronze;
+we split deliberately and defend it with the transport-vs-content distinction above.
+
 ## D-02 — Batch-first; CDC is Fasa C
 Fasa B = high-watermark incremental (`WHERE updated_at > :watermark`). CDC
 (Debezium+Kafka or platform-native) is a later fasa. **Bronze contract is frozen across

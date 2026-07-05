@@ -56,13 +56,16 @@ BUILD ORDER (run the fasa gate before proceeding; gate fail = STOP + report):
     currency codes) + build_xwalk.py (D-04); drip_feed.py with soft-deletes (D-06). GATE:
     per-table row-count manifest (seeded vs source file); xwalk covers 100% of customers in all
     4 systems; rebuild-from-scratch reproduces identical counts.
-  Fasa B — ingestion → Bronze: watermark extractors (Postgres/MSSQL, overlap window R-26, state
-    in the lake); file-drop pickup w/ manifest + quarantine (R-15/16); OBP client (token refresh,
-    backoff, paginate-to-exhaustion, verbatim JSON R-18…22). GATE: kill-and-rerun any extractor
-    mid-run → no dupes, no gaps (idempotency proof).
-  Fasa C — Silver: MERGE upserts (latest per PK); birth_number decode (R-12, unit-tested); OBP
-    JSON flatten; PII masking (D-07); orphan quarantine (R-03). GATE: DQ suite covering the
-    R-register items tagged DQ-gate.
+  Fasa B — ingestion → LANDING → BRONZE (4-layer, D-15): extract into transient LANDING
+    (watermark extractors Postgres/MSSQL overlap-window R-26 state-in-lake; file-drop pickup;
+    OBP token-refresh/backoff/paginate-to-exhaustion/verbatim-JSON R-18…22). Then Landing→Bronze
+    PROMOTION GATE = transport integrity ONLY (_SUCCESS + manifest/checksum + pagination
+    reconciled + dedup + set-complete → Bronze; else quarantine in Landing, Bronze untouched).
+    NO business cleansing at this gate — Bronze stays raw. GATE: (a) kill-and-rerun mid-run → no
+    dupes/gaps; (b) feed a partial/truncated/dup arrival → quarantined, Bronze provably unchanged.
+  Fasa C — Silver (Bronze→Silver = CONTENT quality, never at the Landing→Bronze gate): MERGE
+    upserts (latest per PK); birth_number decode (R-12, unit-tested); OBP JSON flatten; PII
+    masking (D-07); orphan quarantine (R-03). GATE: DQ suite covering R-register DQ-gate items.
   Fasa D — Gold + evidence: dims/facts/marts = EXACTLY the BQ tables, nothing more;
     mart_pipeline_health (BQ-10) mandatory. GATE: one runnable query per BQ with output captured
     in journey/08 — that IS the definition of done.
@@ -110,6 +113,10 @@ VERIFY (enumerate, don't sample — run the actual gates, don't eyeball):
   6. IDENTITY/LINEAGE: every Gold row traces to a real seeded source via dim_customer_xwalk;
      PII masking (D-07) actually applied at Silver; Bronze is verbatim (untransformed).
   7. IDEMPOTENCY: re-run an extractor and a MERGE — confirm no dupes, no gaps.
+  8. LAYER SEPARATION (D-15): confirm Landing and Bronze are distinct layers; the Landing→Bronze
+     gate judges TRANSPORT INTEGRITY only (no business cleansing leaked in); Bronze→Silver judges
+     CONTENT. Prove isolation: a partial/truncated/duplicate arrival is quarantined in Landing
+     and Bronze is unchanged.
 
 OUTPUT: a verdict — APPROVED or CHANGES-REQUIRED — with findings ranked most-severe first, each
 with file:line evidence and a concrete failure scenario. If CHANGES-REQUIRED, hand the numbered

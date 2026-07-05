@@ -32,19 +32,19 @@
 | R-12 | `birth_number` encodes gender inside the date (**month+50 = female**), format YYMMDD → naive parse = wrong DOB and no gender | 1990s Czech national-ID convention | Silver decode rule → `birth_date` + `gender`; unit-tested with known fixtures | 05_STTM |
 | R-13 | Data spans 1993–1998 → timeline clash with 2026 drip-feed and rebased paysim dates | 1999 dataset | Global date-shift at seed: max(date) = seed day, relative offsets preserved (D-03) | seed spec |
 | R-14 | Amounts in CZK vs paysim unitless vs home-credit — mixed currencies corrupt Customer-360 sums | Independent datasets | Every monetary column gets a currency code at seed; Gold normalizes via static FX seed table (BNM OpenAPI = optional live enrich) (D-12) | 04_MODEL |
-| R-15 | File-drop hazards: duplicate drops, partial writes, re-drops of the same export | File-based legacy integration | Processed-file **manifest** (filename+checksum), atomic write (tmp→rename), idempotent re-process | 07 |
-| R-16 | CSV schema drift between drops ("SAP export changed") → silent column shift | No contract on file exports | Schema check on pickup; mismatch → quarantine folder + alert; never best-effort parse | 06_DQ, 07 |
+| R-15 | File-drop hazards: duplicate drops, partial writes, re-drops of the same export | File-based legacy integration | Land as-is; **Landing→Bronze promotion gate** (D-15) = manifest (filename+checksum) + `_SUCCESS` + dedup; only transport-complete sets promote — Bronze never sees a partial/dup drop | 07 |
+| R-16 | CSV schema drift between drops ("SAP export changed") → silent column shift | No contract on file exports | Schema check at the **promotion gate** (D-15); mismatch → quarantine in Landing + alert; Bronze schema stays firewalled; never best-effort parse | 06_DQ, 07 |
 | R-17 | Czech encoding/diacritics → mojibake in names/districts | Legacy encodings | Force UTF-8 (verify actual encoding at seed); encoding expectation in DQ | 06_DQ |
 
 ## D. Open Bank Project sandbox API ("Core Banking")
 
 | ID | Problem | Why | Resolution | Lands in |
 |----|---------|-----|------------|----------|
-| R-18 | Token expiry mid-extract → partial pulls | OAuth/DirectLogin TTL | Refresh-on-401 + resume; every run idempotent per date partition | 07 |
+| R-18 | Token expiry mid-extract → partial pulls | OAuth/DirectLogin TTL | Refresh-on-401 + resume; partial pull stays in **Landing**, not promoted to Bronze until complete (D-15); every run idempotent per date partition | 07 |
 | R-19 | Deeply nested JSON + API version drift → parser breakage | Sandbox evolves | Bronze stores the response **verbatim** (re-parse without re-call — CIL lesson); API version recorded in landing path | 07 |
 | R-20 | Rate limits / sandbox downtime → failed runs | Shared free sandbox | Retry with backoff + circuit-break + alert; rerun-safe by partition | 07 |
 | R-21 | Sandbox data is small and **may reset anytime** → volume/continuity assumptions break | Free sandbox, not SLA'd | Treat OBP as snapshot-append only; volume story lives in paysim; snapshot diff detects resets | 01_SOURCES |
-| R-22 | Pagination on `/transactions` → silent truncation | Default page limits | Paginate to exhaustion + reconcile counts vs API-reported totals | 07, 06_DQ |
+| R-22 | Pagination on `/transactions` → silent truncation | Default page limits | Paginate to exhaustion; **promotion gate** reconciles counts vs API-reported totals (D-15) — a truncated pull fails the gate and is quarantined in Landing, never promoted | 07, 06_DQ |
 
 ## E. Cross-source / systemic
 
@@ -54,7 +54,7 @@
 | R-24 | Conflicting customer attributes across systems (name/address/DOB differ) | Multiple masters | Golden-record **survivorship rules**: source priority CRM > core > loans > cards, latest `updated_at` tiebreak | 04_MODEL |
 | R-25 | **Hard deletes are invisible** to watermark batch | Watermark only sees rows that still exist | Fasa B: soft-delete flag (`is_deleted` + touch `updated_at`). Hard deletes = Fasa C CDC only (`op='d'`). Named, documented limitation (D-06) | 07 |
 | R-26 | Late/out-of-order updates — drip-feed races the extractor at the watermark boundary → missed rows | Non-atomic write vs read | Overlap window (watermark − 5 min) + MERGE dedupe on PK + `updated_at` | 07 |
-| R-27 | **PII lands raw in Bronze** — `birth_number`, account/card numbers | Verbatim-Bronze rule (D-05) | Mask at Silver; Bronze access restricted; `secrets_scan.py` gate; full ruling in journey/09 (D-07) | 09_SECURITY |
-| R-28 | Source schema evolution (new column added mid-project) → break or silent loss | Live-ish sources | Controlled Delta schema evolution: explicit `mergeSchema` + drift alert — never auto-silent | 07 |
+| R-27 | **PII lands raw in Landing + Bronze** — `birth_number`, account/card numbers | Verbatim raw-layer rule (D-05/D-15) | Mask at Silver; **both Landing and Bronze access-restricted** (Landing is transient but still holds raw PII); `secrets_scan.py` gate; full ruling in journey/09 (D-07) | 09_SECURITY |
+| R-28 | Source schema evolution (new column added mid-project) → break or silent loss | Live-ish sources | Drift detected at the **Landing→Bronze promotion gate** (D-15); controlled Delta schema evolution into Bronze: explicit `mergeSchema` + drift alert — never auto-silent | 07 |
 | R-29 | Late-arriving dimension — card txn lands before its customer exists in the CRM extract | Independent extract schedules | Unknown-member key (−1) + re-link job on next run | 04_MODEL |
 | R-30 | No reconciliation = no stakeholder trust in ANY number | End-to-end pipeline | Per-run source→Bronze→Silver row-count reconciliation with tolerances; surfaced in `mart_pipeline_health` (BQ-10) | 06_DQ, 08 |

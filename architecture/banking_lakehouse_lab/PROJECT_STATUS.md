@@ -21,6 +21,12 @@ models. This folder is spec-genre, which the contract's default sweep deliberate
 (see `_default_docs()` docstring), and CI only sweeps top-level `architecture/*.md` — so CI
 stays green. Do NOT add these names to CIL's ALLOW list; they belong to another repo.
 
+## Architecture note (D-15, 2026-07-05)
+Medallion is **4-layer: Landing → Bronze → Silver → Gold** (not 3). Landing = transient messy
+arrival zone; Bronze = permanent trusted raw archive; promotion Landing→Bronze judges
+TRANSPORT INTEGRITY only, Bronze→Silver judges CONTENT. Full rationale + interview defense in
+`01_OPUS_DECISIONS.md` D-15. All docs/diagram/prompts updated to match.
+
 ## Status log
 - 2026-07-05 — Fasa-0 planning complete (this folder created). Origin: owner's Gemini
   brainstorm 2026-07-04; Opus verified/corrected it (GA4 "live" claim false; Berka added as
