@@ -27,6 +27,15 @@ arrival zone; Bronze = permanent trusted raw archive; promotion Landing→Bronze
 TRANSPORT INTEGRITY only, Bronze→Silver judges CONTENT. Full rationale + interview defense in
 `01_OPUS_DECISIONS.md` D-15. All docs/diagram/prompts updated to match.
 
+## Security note (D-16, 2026-07-05)
+Banking is a real-PII domain (birth_number, account/card numbers) + owner targets bank roles
+(RBC) → security is a top interview differentiator. Deepened by filling the ALREADY-MANDATORY
+`journey/09` richly from new `06_SECURITY_MODEL.md` (secrets, data classification, UC RBAC
+matrix, service identities, audit/lineage, PII, compliance/erasure, threat model). **No 9-file
+`security/` folder** — that was rejected by kit ADR-001 rej-alt #2 + CIL ADR-014; content lives
+in journey/09. New risks R-31…R-35 (RBAC, service identity, audit, erasure, secrets). Aligned
+with kit ADR-001, CIL ADR-014, D-01 Add #3 (UC=RBAC/audit), D-05/D-07/D-15, secrets_scan gate.
+
 ## Status log
 - 2026-07-05 — Fasa-0 planning complete (this folder created). Origin: owner's Gemini
   brainstorm 2026-07-04; Opus verified/corrected it (GA4 "live" claim false; Berka added as

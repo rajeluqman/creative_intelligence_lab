@@ -49,8 +49,10 @@ BUILD ORDER (run the fasa gate before proceeding; gate fail = STOP + report):
     gates/framework.yml FIRST (paths, banned tech = the OUT list, identity = customer_id via
     xwalk); CLAUDE.md from template (stop-gate + anti-shortcut, English); 7 agents (6 from kit +
     cikgu copied from /workspaces/creative_intelligence_lab/.claude/agents/cikgu.md); journey 01
-    + 02 filled from lab docs 03/04; journey 03–09 drafted (full set — N/A needs a dated reason);
-    CI from ci.yml.template. GATE: all four bootstrap gates green.
+    + 02 filled from lab docs 03/04; journey 09 filled RICHLY from 06_SECURITY_MODEL.md (D-16,
+    do NOT N/A — banking is real-PII); journey 03–08 drafted (full set — N/A needs a dated
+    reason); framework.yml secrets_scan.extra_patterns = DB conn strings + OBP tokens; NO
+    separate security/ folder. CI from ci.yml.template. GATE: all four bootstrap gates green.
   Fasa A — sources + seeding: docker-compose (postgres + mssql2022 + sap_drop/ folder); seed/
     loaders per D-03 (PK+timestamps, global date-rebase, paysim step→ts, deterministic seed,
     currency codes) + build_xwalk.py (D-04); drip_feed.py with soft-deletes (D-06). GATE:
@@ -80,6 +82,9 @@ FINAL SELF-AUDIT before you declare done (write it into a new BUILD_REPORT.md, c
   4. All four bootstrap gates green (paste the command output).
   5. Idempotency + reconciliation proofs captured (Fasa B/D gates).
   6. Portability check: grep the critical path for DLT/dbutils lock-in — must be clean or justified.
+  7. Security (D-16): journey/09 filled from 06_SECURITY_MODEL (not N/A); RBAC matrix = real UC
+     GRANTs (raw layers deny analyst/serving); secrets_scan green; R-31…R-35 each addressed;
+     no unmasked PII in Gold; no separate security/ folder.
   Mark anything you could not verify as "UNVERIFIED" explicitly. Then hand off to Opus (prompt B).
 ```
 
@@ -117,6 +122,10 @@ VERIFY (enumerate, don't sample — run the actual gates, don't eyeball):
      gate judges TRANSPORT INTEGRITY only (no business cleansing leaked in); Bronze→Silver judges
      CONTENT. Prove isolation: a partial/truncated/duplicate arrival is quarantined in Landing
      and Bronze is unchanged.
+  9. SECURITY (D-16): journey/09 filled richly (not N/A); RBAC matrix is real UC GRANTs and an
+     analyst/serving role provably CANNOT read Landing/Bronze raw PII; PII masked at Silver
+     (no unmasked account/card/birth_number in Gold); secrets_scan green; R-31…R-35 handled;
+     confirm NO separate security/ folder was created (content is in journey/09).
 
 OUTPUT: a verdict — APPROVED or CHANGES-REQUIRED — with findings ranked most-severe first, each
 with file:line evidence and a concrete failure scenario. If CHANGES-REQUIRED, hand the numbered

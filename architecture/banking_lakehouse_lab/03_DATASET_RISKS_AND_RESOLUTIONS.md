@@ -1,7 +1,8 @@
-# Dataset Risk Register — all known problems + resolutions (30 items)
+# Dataset Risk Register — all known problems + resolutions (35 items)
 
-> Feeds `journey/01_DATASET_AND_SOURCES.md` (risks) and `journey/06_DQ_PLAN.md` (items tagged
-> **DQ-gate**). Every item = (problem → why it happens → resolution → where it lands).
+> Feeds `journey/01_DATASET_AND_SOURCES.md` (risks), `journey/06_DQ_PLAN.md` (items tagged
+> **DQ-gate**), and `journey/09_SECURITY_AND_ACCESS.md` (section F, via `06_SECURITY_MODEL.md`).
+> Every item = (problem → why it happens → resolution → where it lands).
 > IDs are stable — cite them in STTM/DQ docs as R-xx.
 
 ## A. Home Credit → PostgreSQL ("Sales / Loan Dept")
@@ -58,3 +59,13 @@
 | R-28 | Source schema evolution (new column added mid-project) → break or silent loss | Live-ish sources | Drift detected at the **Landing→Bronze promotion gate** (D-15); controlled Delta schema evolution into Bronze: explicit `mergeSchema` + drift alert — never auto-silent | 07 |
 | R-29 | Late-arriving dimension — card txn lands before its customer exists in the CRM extract | Independent extract schedules | Unknown-member key (−1) + re-link job on next run | 04_MODEL |
 | R-30 | No reconciliation = no stakeholder trust in ANY number | End-to-end pipeline | Per-run source→Bronze→Silver row-count reconciliation with tolerances; surfaced in `mart_pipeline_health` (BQ-10) | 06_DQ, 08 |
+
+## F. Security (D-16 — banking is a real-PII domain; feeds journey/09 via `06_SECURITY_MODEL.md`)
+
+| ID | Problem | Why | Resolution | Lands in |
+|----|---------|-----|------------|----------|
+| R-31 | **Over-broad access** — an analyst/serving role can read raw unmasked PII in Landing/Bronze | Default-open grants; raw layers hold birth_number + account/card numbers | Unity Catalog RBAC (D-16 §3): raw layers deny analyst/serving; marketing = Gold-only; real GRANTs not prose | 09_SECURITY |
+| R-32 | **Over-privileged / shared service identity** — one admin cred for all pipelines | Convenience | Dedicated least-privilege service identity per concern (CIL ADR-014 rule); serving key read-only scoped to `gold/` (D-16 §4) | 09_SECURITY |
+| R-33 | **Untraceable change** — no answer to "who read/deleted what, when" | No audit surface | Platform-native audit: UC query history + table/column lineage + S3 access logs (D-16 §5) — no bespoke audit build | 09_SECURITY |
+| R-34 | **Right-to-erasure infeasible** — "delete my data" can't be executed across 4 disjoint sources | No shared customer key | `dim_customer_xwalk` (D-04) resolves one customer across all sources → erasure is executable end-to-end; documented as a compliance capability (D-16 §7) | 09_SECURITY |
+| R-35 | **Secret leaked into code/config/log** — DB creds, OBP token, S3 key | Hardcoding under time pressure | `secrets_scan.py` gate + `framework.yml` extra_patterns (DB conn strings, OBP tokens); Databricks secret scopes; `BANK_PAT` env-only (D-16 §1) | 09_SECURITY |

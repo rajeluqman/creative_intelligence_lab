@@ -119,7 +119,7 @@ then fill the journey docs with the content already drafted in this lab folder:
 | `06_DQ_PLAN.md` | Risk register items marked `DQ-gate` in `03_DATASET_RISKS…` |
 | `07_PIPELINE_SPEC.md` | Fasa A/B/C mechanics: watermark, Landing→Bronze promotion gate (transport integrity, `_SUCCESS`+manifest — D-15), MERGE, retry/backoff |
 | `08_SERVING_AND_EVIDENCE.md` | Mart outputs + reconciliation evidence per BQ |
-| `09_SECURITY_AND_ACCESS.md` | PII masking rules (D-07), Bronze access restriction, secrets |
+| `09_SECURITY_AND_ACCESS.md` | Fill richly from `06_SECURITY_MODEL.md` (D-16): secrets, data classification, UC RBAC matrix, service identities, audit/lineage, PII (D-07), compliance/erasure, threat model |
 
 Drill prep already staged: O-DSN-04 (CDC over full dump — *banking-project prep*) and O-DSN-05
 (high-watermark extraction) in `../control_plane_lab/saboteur/PROBLEM_BANK_OPTIMIZATION.md:130`.
@@ -136,4 +136,5 @@ Airflow inside this repo.
 - `03_DATASET_RISKS_AND_RESOLUTIONS.md` — full risk register (R-01…R-30)
 - `04_BUSINESS_QUESTIONS.md` — the 10 stakeholder BQs with join paths
 - `05_BUILD_AND_VERIFY_PROMPTS.md` — Sonnet build+self-audit / Opus verify paste-prompts
+- `06_SECURITY_MODEL.md` — banking security content source for journey/09 (D-16)
 - `PROJECT_STATUS.md` — resume-safe status

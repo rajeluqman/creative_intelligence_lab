@@ -209,6 +209,53 @@ the manifest+atomic-write mechanism was already being built for R-15 — this mo
 hidden code to an explicit, defensible layer. Canonical medallion folds Landing into Bronze;
 we split deliberately and defend it with the transport-vs-content distinction above.
 
+## D-16 — Security depth: fill journey/09 richly (banking IS a real-PII domain). Owner 2026-07-05
+Banking is a higher-security domain than CIL was (CIL = ad video, ~no real PII; banking =
+birth_number, account/card numbers, financial transactions). Owner is targeting bank roles
+(RBC), so a real security model is a top-tier interview differentiator, not garnish.
+
+**What we do:** fill the ALREADY-MANDATORY `journey/09_SECURITY_AND_ACCESS.md` (kit ADR-001)
+with real banking content for every section — driven by THIS project's actual data — using the
+content drafted in `06_SECURITY_MODEL.md` as the source. Plus `gates/secrets_scan.py` (already
+in the kit) with banking `extra_patterns` in `framework.yml` (DB connection strings, OBP tokens).
+
+**What we explicitly DO NOT do (alignment, not omission):** we do NOT create ChatGPT's 9-file
+`security/` folder (threat_model.md, incident_response.md, compliance.md, …). That exact
+structure was already considered and REJECTED twice — kit **ADR-001 Rejected-alt #2** and CIL
+**ADR-014** ("just enough, named explicitly", one real least-privilege role, not a speculative
+security *program*). Spawning 9 near-empty files here would be doc sprawl @scope-guardian vetoes.
+The substance goes in the mandatory doc that already exists; a threat-model + incident note live
+as *sections* of journey/09, not as their own files.
+
+**The 8 security concerns mapped to THIS ratified stack (the interview answer):**
+1. **Source credentials** — DB creds, OBP OAuth tokens, S3 keys → **Databricks secrets** /
+   env-injected, never in code. Enforced by `secrets_scan.py`. (Extends the `BANK_PAT`
+   never-on-disk discipline already used for git push.)
+2. **Data classification** — birth_number, account/card numbers, balances = sensitive/PII
+   (R-27); classified per-column in journey/09's table. Card/account masked to last-4 (D-07).
+3. **RBAC / least privilege** — **Unity Catalog IS the mechanism** (a payoff of D-01 Add #3):
+   grants per layer — analysts/marketing get **Gold only**, never Landing/Bronze (raw PII);
+   engineers get Silver; raw layers locked down. Real GRANTs, not prose (journey/09 matrix).
+4. **Storage / layer access** — Landing + Bronze access-restricted (both hold raw PII, R-27);
+   serving (Snowflake) sees Gold only (masked). Ties to D-15 4-layer containment.
+5. **Service identities** — each pipeline/extractor gets its own scoped identity, NOT a shared
+   admin (mirrors CIL ADR-014's dedicated-not-reused rule); serving IAM key is read-only,
+   scoped to `banking/` (already in D-01 Add #2/#3).
+6. **Data quality as a security control** — value-range/reject gates (already the DQ suite) stop
+   poisoned/implausible records (negative balances, future dates) — DQ is a security layer too.
+7. **Audit + lineage** — **Unity Catalog native** (query history, table lineage) — platform-
+   native over a bespoke audit build (journey/09's stated default). Answers "who touched what".
+8. **Compliance (GDPR/PDPA + banking)** — right-to-erasure is *tractable* here because
+   `dim_customer_xwalk` (D-04) makes one customer traceable + deletable across all 4 sources;
+   documented as a compliance capability, not just a checkbox.
+
+**Alignment checked (this is a security decision, so it touches many contracts):** consistent
+with kit ADR-001 (journey/09 mandatory + secrets gate), CIL ADR-014 (access-model shape),
+D-01 Add #3 (UC = RBAC/audit/lineage), D-05 (verbatim Bronze — masking is downstream, not in
+Bronze), D-07 (mask at Silver), D-15 (raw PII contained in Landing+Bronze, restricted), R-27
+(+ new R-31…R-34 below). Sign-off: architect (access model / serving-as-view) + scope-guardian
+(confirmed IN journey/09, NOT scope creep to a 9-file program).
+
 ## D-02 — Batch-first; CDC is Fasa C
 Fasa B = high-watermark incremental (`WHERE updated_at > :watermark`). CDC
 (Debezium+Kafka or platform-native) is a later fasa. **Bronze contract is frozen across

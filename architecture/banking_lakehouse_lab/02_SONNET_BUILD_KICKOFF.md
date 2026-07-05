@@ -28,8 +28,12 @@
 3. `CLAUDE.md` from template — stop-gate + anti-shortcut sections, English default.
 4. Agents per D-09 (7 roles; copy cikgu pattern from CIL).
 5. Journey docs: 01 + 02 filled directly from lab docs `03_…RISKS…` and `04_BUSINESS_QUESTIONS`;
-   03–09 drafted per the mapping table in `00_MASTER_SPEC.md` (full set — N/A needs a reason).
-6. CI from `gates/ci.yml.template`. **Gate:** all four bootstrap gates green.
+   **09 filled RICHLY from `06_SECURITY_MODEL.md` (D-16 — banking is a real-PII domain, do NOT
+   N/A it)**; 03–08 drafted per the mapping table in `00_MASTER_SPEC.md` (full set — N/A needs a
+   reason). Do NOT create a separate `security/` folder (D-16: rejected — content goes in 09).
+6. `framework.yml → secrets_scan.extra_patterns`: add DB connection-string + OBP token shapes.
+7. CI from `gates/ci.yml.template`. **Gate:** all four bootstrap gates green (incl. secrets_scan
+   + journey_completeness proving 09 is non-empty).
 
 ### Fasa A — sources + seeding
 1. `docker-compose.yml`: postgres + mssql2022 (+ named volumes); `sap_drop/` folder.
@@ -54,13 +58,15 @@
 
 ### Fasa C — Silver (Bronze→Silver = CONTENT quality, D-15)
 MERGE upserts (latest per PK), birth_number decode (R-12, unit-tested), OBP JSON flatten,
-PII masking (D-07), quarantine tables for R-03 orphans. **Gate:** DQ suite per the R-register.
-(Content quality lives HERE, never at the Landing→Bronze gate.)
+**PII masking (D-07/D-16 §6): account/card → last-4, birth_number decoded then raw dropped**,
+quarantine tables for R-03 orphans. **Gate:** DQ suite per the R-register; confirm no unmasked
+PII leaves Silver toward Gold.
 
-### Fasa D — Gold + evidence
+### Fasa D — Gold + evidence + access model
 Dims/facts/marts = exactly the BQ table, nothing more. `mart_pipeline_health` (BQ-10) is
-mandatory, not garnish. **Gate:** one runnable query per BQ with output captured in
-`journey/08` — that IS the definition of done.
+mandatory, not garnish. Apply the **Unity Catalog RBAC grants** from D-16 §3 (analyst/serving
+= Gold-only; raw layers denied). **Gate:** one runnable query per BQ with output captured in
+`journey/08`; RBAC matrix in journey/09 reflects real GRANTs (R-31).
 
 ### Fasa E — Snowflake serving veneer (OPTIONAL, after Gold — D-01 Addendum #2)
 ONLY after Fasa D Gold exists: Snowflake **external tables** over the Gold S3 prefix
@@ -88,6 +94,8 @@ Portable code = mandatory so the repo still runs locally for defense after the w
 - No streaming/Kafka, no ML training, no dashboards beyond the Fasa E page, no new marts beyond BQ-01…10
   (scope-guardian has the veto; ADR-000 for any intake).
 - No editing gate `.py` scripts to fit the repo — values go in `framework.yml`.
-- Bronze is never transformed, masked, or "cleaned". Silver does that.
+- No separate `security/` folder (D-16 / kit ADR-001 rej-alt #2) — security content lives in
+  `journey/09` filled richly from `06_SECURITY_MODEL.md`; threat model + incident = sections, not files.
+- Bronze is never transformed, masked, or "cleaned". Silver does that. Raw PII stays out of Gold.
 - Don't trust these docs blindly against reality: if a dataset column named here doesn't
   exist on disk, surface it — the R-register is a map, the file is the territory.
