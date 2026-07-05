@@ -70,11 +70,48 @@ code. Terraform for 3 resources is ceremony, and the governing rule of this port
 adds an IaC claim to the resume later, revisit as a small post-v1 hardening module (IAM
 policy + lifecycle + Snowflake external stage via provider) — never on the critical path.
 
+## D-14 — Development workflow: local-first, vertical-slice-first, sample-set dev loop
+Owner asked 2026-07-05 how the build actually runs day-to-day. Locked answer:
+- **No separate "cloud compute" step. This project is NOT Glue.** Per D-01 the engine is
+  **PySpark local mode + DuckDB running on the dev machine**; S3 is only *storage*. You do
+  NOT "develop locally then deploy the job to Glue" — that is home-credit's stack/story, not
+  banking's. The loop here is: run Spark locally → it writes Delta/parquet to
+  `s3://<bucket>/banking/...` (or the local-disk fallback). Same code, dev and "real".
+- **Vertical slice BEFORE horizontal layer** (the important methodology call). The Fasa
+  A→B→C→D order is the macro sequence + gates, but WITHIN it, drive **one source end-to-end
+  thin first** (e.g. Postgres → Bronze → Silver → one Gold check) to validate the
+  Bronze→Silver contract, THEN replicate across the other 3 sources. Do NOT build all of
+  Bronze (4 sources) then discover at Silver the Bronze format is wrong and redo 4 sources.
+  First slice de-risks the contract; after it, widening is mechanical.
+- **Sample-set throughout the dev loop.** Seed a small deterministic subset for fast
+  iteration (seconds, no cost); run the full seeded set only for the "real" fasa-gate run.
+  Determinism (D-03.4) means subset and full behave identically.
+- Why logged: so "why did you build it this way" is answerable from the record, not memory.
+
 ## D-02 — Batch-first; CDC is Fasa C
 Fasa B = high-watermark incremental (`WHERE updated_at > :watermark`). CDC
 (Debezium+Kafka or platform-native) is a later fasa. **Bronze contract is frozen across
 fasa** — the CDC upgrade swaps extractors only; Bronze-down never changes. This IS the
 O-DSN-04/05 drill made real.
+
+**Rationale (for interview defense — CDC is an optimization, not a correctness feature):**
+1. Batch and CDC produce identical Silver/Gold — only the extractor differs. Build batch
+   first and ~90% of the project (MERGE, crosswalk, marts, DQ) is already proven when CDC
+   is swapped in.
+2. The hard/valuable problems live in the transform (MDM crosswalk, birth_number decode,
+   survivorship, reconciliation), not the extraction. CDC-first burns the early weeks on
+   Kafka/Debezium plumbing before any portfolio-worthy logic exists.
+3. Batch is cheaper to run and debug — no 24/7 Kafka/Debezium eating RAM, no offset/lag/
+   schema-registry failure class confounding logic bugs. Batch fails visibly and re-runs
+   deterministically.
+4. It mirrors real bank migration order (Teradata→cloud): stand up incremental loads, prove
+   reconciliation + stakeholder trust (BQ-10), THEN cut latency with CDC where the business
+   needs it. Industry-correct sequence = better interview story than "went straight to Kafka".
+5. Upgrade path is small once batch works (≈ `.read`→`.readStream`; watermark → CDC offset).
+**Honest caveat (R-25):** pure batch high-watermark cannot see HARD deletes — a physically
+deleted row never reappears in a `WHERE updated_at >` query. That specific gap is what CDC
+closes later (`op='d'` from the log). So batch is not a throwaway prototype: it handles
+inserts/updates correctly and completely; CDC is added specifically for deletes + latency.
 
 ## D-03 — Seeding rules (locked)
 1. Every seeded table gets a PK + `created_at` + `updated_at`.
