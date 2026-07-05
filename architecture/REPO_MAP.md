@@ -11,7 +11,7 @@
 >
 > Not mapped (by design): `.github/`, lockfiles, `*.example`, secret templates, settings.
 
-**230 files mapped.**
+**231 files mapped.**
 
 ## Architecture Decision Records
 
@@ -55,6 +55,7 @@
 | `architecture/banking_lakehouse_lab/02_SONNET_BUILD_KICKOFF.md` | Sonnet Build Kickoff — banking-multisource-lakehouse | — | — |
 | `architecture/banking_lakehouse_lab/03_DATASET_RISKS_AND_RESOLUTIONS.md` | Dataset Risk Register — all known problems + resolutions (30 items) | — | — |
 | `architecture/banking_lakehouse_lab/04_BUSINESS_QUESTIONS.md` | The 10 Business Questions — what 80% of bank stakeholders actually ask | — | — |
+| `architecture/banking_lakehouse_lab/05_BUILD_AND_VERIFY_PROMPTS.md` | Build & Verify Prompts — banking-multisource-lakehouse | — | — |
 | `architecture/banking_lakehouse_lab/PROJECT_STATUS.md` | Banking Lakehouse Lab — Project Status | — | — |
 | `architecture/control_plane_lab/00_MASTER_SPEC.md` | Control-Plane Airflow Lab — MASTER SPEC (Fasa 0, Opus) | — | — |
 | `architecture/control_plane_lab/01_OPUS_DECISIONS.md` | Opus Decisions — Control-Plane Airflow Lab (signed-off ruling) | — | — |
