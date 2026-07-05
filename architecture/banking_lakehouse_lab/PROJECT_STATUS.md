@@ -2,8 +2,11 @@
 
 ## ▶ RESUME HERE (2026-07-05, evening)
 **Planning COMPLETE and RATIFIED. All blockers cleared — build may start.**
-- D-01 ratified by owner (as amended: local-first, S3 truth, Snowflake serving veneer,
-  Fabric + Terraform OUT).
+- **Stack (D-01 Addendum #3, final):** Databricks = primary engine for ALL transform
+  (portable PySpark + Delta, Unity Catalog over S3). S3 = sole truth. Snowflake = serving.
+  Fabric + Terraform OUT. Databricks trial is deliberately disposable — run a few times,
+  screenshot success + UC lineage into journey/08, drill/troubleshoot, delete; portable code
+  keeps the repo runnable locally for defense afterward.
 - Repo live: `https://github.com/rajeluqman/banking-multisource-lakehouse`, cloned at
   `/workspaces/banking-multisource-lakehouse` (empty). Push auth verified: `BANK_PAT`
   Codespaces secret + per-repo credential helper (token never on disk); remote URL clean.

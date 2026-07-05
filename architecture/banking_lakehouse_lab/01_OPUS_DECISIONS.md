@@ -1,9 +1,11 @@
 # Opus Decisions — Banking Multi-Source Lakehouse (Fasa-0 rulings)
 
 > Reads with `00_MASTER_SPEC.md`. Same contract as the retrofit/control-plane decision docs:
-> these are locked unless the owner overrides. ONE item needs owner ratification before Sonnet
-> starts: **D-01 (stack)**. Everything else is buildable as-is.
-> Date: 2026-07-05. Branch (planning only): `framework/pipeline-retrofit-plan` in CIL.
+> these are locked unless the owner overrides. Date: 2026-07-05. Branch (planning only):
+> `framework/pipeline-retrofit-plan` in CIL.
+> **STACK RATIFIED 2026-07-05 — see D-01 Addendum #3 (the current, binding stack ruling);
+> the local-first D-01 body + Addenda #1/#2 below are superseded history, kept for the
+> justification trail.**
 
 ## D-01 — Stack: local-first lakehouse ⚠️ OWNER RATIFY
 **Recommendation (default if no objection):**
@@ -62,6 +64,40 @@ RESUME, and the resume says **Snowflake · Databricks · AWS** — not Fabric. T
   Databricks story; banking carries the multi-source + MDM + Snowflake-serving story. One
   repo, one story.
 
+## D-01 Addendum #3 (2026-07-05) — RATIFIED STACK (binding; supersedes body + #1/#2)
+Owner chose, after the Databricks-depth + storage decision: **Databricks = primary engine,
+S3 = truth, Snowflake = serving.** This is the current stack. Concretely:
+- **Compute: ALL transform on Databricks** (Bronze→Silver→Gold), PySpark + Delta,
+  **Unity Catalog** governing S3 **external locations**. UC over multi-source MDM is
+  banking's distinct governance story (olist/paysim/Volve carry the plain-Databricks story;
+  this one carries UC + multi-source). Supersedes Addendum #2's "Databricks not forced in".
+- **Storage: S3 stays sole source of truth** (`s3://<bucket>/banking/`), reuse CIL bucket.
+  Both engines read S3 in place; neither owns it. NOT ADLS (keeps $0 reuse, no migration).
+- **Serving: Snowflake** external tables over Gold S3 + Power BI (CIL ADR-005 pattern).
+  DuckDB = $0 fallback if no live Snowflake account.
+- **Fabric: still fully OUT** (Addendum #2 unchanged on this) — not on the resume; the Fabric
+  trial serves the separate home-credit-fabric-migration project.
+
+**Owner-confirmed operating model (2026-07-05): the Databricks trial is DELIBERATELY
+DISPOSABLE.** Plan is explicit: run the pipeline a few times, screenshot every success +
+UC lineage as evidence, use it for drills + troubleshooting practice, then **delete the
+workspace**. So the 14-day limit is not a risk to fear — it's the intended lifecycle. The
+only thing that must outlive it: the captured evidence + a repo that still runs (locally /
+subset) for interview defense. That makes the mitigation below the PLAN, not a hedge —
+Sonnet MUST:
+1. **Write portable PySpark**, not Databricks-locked constructs (avoid DLT / heavy `dbutils` /
+   notebook-only magic on the critical path) so the same transforms fall back to local Spark /
+   Community Edition against S3 after the trial dies. UC table refs are the one accepted
+   lock-in; keep a config switch (UC catalog vs path-based) so defense runs work without UC.
+2. **Develop on the free path** (local subset or Community Edition — note CE has NO Unity
+   Catalog and can't attach your S3 easily, so local-subset is the realistic dev default);
+   reserve the paid trial for the **canonical full-scale run + UC lineage capture** in a
+   concentrated window near the end.
+3. **Evidence-first (hard rule):** during the trial window, harvest the full-run output + UC
+   lineage/governance screenshots + `DESCRIBE HISTORY` + exported notebooks-with-output into
+   `journey/08`. The portfolio is defended by that evidence + a local-runnable repo, never by
+   an expired workspace.
+
 ## D-13 — Terraform: OUT of v1 (owner asked 2026-07-05)
 The project's cloud infra surface is ~3 resources (S3 prefix, 1 read-only IAM policy/key for
 serving, optionally an S3 lifecycle rule); local "infra" is docker-compose, which is already
@@ -70,13 +106,14 @@ code. Terraform for 3 resources is ceremony, and the governing rule of this port
 adds an IaC claim to the resume later, revisit as a small post-v1 hardening module (IAM
 policy + lifecycle + Snowflake external stage via provider) — never on the critical path.
 
-## D-14 — Development workflow: local-first, vertical-slice-first, sample-set dev loop
-Owner asked 2026-07-05 how the build actually runs day-to-day. Locked answer:
-- **No separate "cloud compute" step. This project is NOT Glue.** Per D-01 the engine is
-  **PySpark local mode + DuckDB running on the dev machine**; S3 is only *storage*. You do
-  NOT "develop locally then deploy the job to Glue" — that is home-credit's stack/story, not
-  banking's. The loop here is: run Spark locally → it writes Delta/parquet to
-  `s3://<bucket>/banking/...` (or the local-disk fallback). Same code, dev and "real".
+## D-14 — Development workflow: dev-cheap, run-on-Databricks, vertical-slice, sample-set
+Owner asked 2026-07-05 how the build actually runs day-to-day. Locked answer (aligned to the
+ratified Databricks stack, D-01 Addendum #3):
+- **Two environments, one portable codebase.** DEV loop = local Spark / subset (free, fast,
+  no trial clock) for iterating logic. CANONICAL runs = **Databricks clusters** (full data,
+  Unity Catalog over S3) during the disposable trial window, screenshots harvested. Same
+  portable PySpark runs in both — that is what lets the repo still run for defense after the
+  workspace is deleted. (NOT Glue — Glue is home-credit's story; banking = Databricks + UC.)
 - **Vertical slice BEFORE horizontal layer** (the important methodology call). The Fasa
   A→B→C→D order is the macro sequence + gates, but WITHIN it, drive **one source end-to-end
   thin first** (e.g. Postgres → Bronze → Silver → one Gold check) to validate the

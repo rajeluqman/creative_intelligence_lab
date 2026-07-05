@@ -49,6 +49,11 @@ is both cheaper AND more realistic for legacy SAP integration).
   │  + drip-feed script: INSERT/UPDATE a few rows every X minutes           │
   └─────────────────────────────────────────────────────────────────────────┘
 
+   COMPUTE (D-01 Addendum #3): ALL transform below runs on DATABRICKS clusters
+   (portable PySpark + Delta, Unity Catalog over S3 external locations). S3 = sole
+   truth; dev loop iterates on local Spark / subset; canonical full runs on the
+   disposable Databricks trial with evidence screenshotted. Snowflake serves Gold.
+
               FASA B — INGESTION (batch-first, D-02)
 
    POSTGRES             MS SQL              SAP-SIM folder      OPEN BANK API
@@ -78,7 +83,7 @@ is both cheaper AND more realistic for legacy SAP integration).
   └─────────────────────────────────────────────────────────────────────────┘
       ▼
   ┌─────────────────────────────────────────────────────────────────────────┐
-  │ SERVING (Fasa E, optional, read-only — D-01 Addendum #2)                │
+  │ SERVING (Fasa E, optional, read-only — D-01 Addendum #2/#3)             │
   │   Snowflake external tables over Gold S3 + Power BI page (BQ-01/02);    │
   │   DuckDB = $0 fallback. Lake stays sole truth (CIL ADR-005 pattern).    │
   └─────────────────────────────────────────────────────────────────────────┘

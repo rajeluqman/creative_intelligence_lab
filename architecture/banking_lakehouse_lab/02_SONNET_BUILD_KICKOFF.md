@@ -65,8 +65,18 @@ fall back to **DuckDB ($0, also CIL-proven)**. Evidence (queries + screenshots) 
 Fabric is OUT of this project entirely (owner ruling — not on the resume; the Fabric trial
 serves the separate home-credit-fabric-migration project instead).
 
+## Stack (RATIFIED — D-01 Addendum #3)
+Compute = **Databricks** for ALL transform (Bronze→Silver→Gold), portable PySpark + Delta,
+**Unity Catalog** over S3 external locations. Storage = **S3** (`s3://<bucket>/banking/`), sole
+truth, reuse CIL bucket. Serving = **Snowflake** external tables over Gold + Power BI (Fasa E).
+Dev on local Spark / subset (free); canonical full runs on the **disposable Databricks trial**
+(run a few times, screenshot success + UC lineage into journey/08, drill/troubleshoot, delete).
+Portable code = mandatory so the repo still runs locally for defense after the workspace is gone.
+
 ## Do-NOTs
 - No Fabric — out of scope entirely (D-01 Addendum #2). No Terraform (D-13).
+- No Databricks-locked constructs on the critical path (DLT / notebook-only magic / heavy
+  `dbutils`) — keep transforms portable PySpark so they survive trial deletion (D-01 Add #3).
 - No streaming/Kafka, no ML training, no dashboards beyond the Fasa E page, no new marts beyond BQ-01…10
   (scope-guardian has the veto; ADR-000 for any intake).
 - No editing gate `.py` scripts to fit the repo — values go in `framework.yml`.
