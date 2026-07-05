@@ -11,7 +11,7 @@
 >
 > Not mapped (by design): `.github/`, lockfiles, `*.example`, secret templates, settings.
 
-**127 files mapped.**
+**225 files mapped.**
 
 ## Architecture Decision Records
 
@@ -30,6 +30,7 @@
 | `architecture/ADR-011-conversational-language-protocol.md` | ADR-011 — Conversational language protocol (Malaysian Technical Manglish for narration) | — | — |
 | `architecture/ADR-012-token-efficiency-and-session-discipline.md` | ADR-012 — Token-efficiency & session-discipline operating protocol | — | — |
 | `architecture/ADR-013-aws-oidc-ci-federation.md` | ADR-013 — AWS OIDC role federation for real dbt build in CI | — | — |
+| `architecture/ADR-014-security-and-access-model.md` | ADR-014 — Security & Access Model (simulation-grade) | — | — |
 
 ## Architecture docs (record)
 
@@ -49,7 +50,31 @@
 | `architecture/SPEC_v1_search.md` | BUILD SPEC — v1 Search & Mix-and-Match Demo (ships FIRST) | — | — |
 | `architecture/STACK_AND_FLOW.md` | STACK & END-TO-END FLOW — Creative Intelligence Pipeline | — | — |
 | `architecture/STTM.md` | STTM — Source-to-Target Mapping | — | — |
+| `architecture/banking_lakehouse_lab/00_MASTER_SPEC.md` | Banking Multi-Source Lakehouse — Master Spec (Fasa-0 planning) | — | — |
+| `architecture/control_plane_lab/00_MASTER_SPEC.md` | Control-Plane Airflow Lab — MASTER SPEC (Fasa 0, Opus) | — | — |
+| `architecture/control_plane_lab/01_OPUS_DECISIONS.md` | Opus Decisions — Control-Plane Airflow Lab (signed-off ruling) | — | — |
+| `architecture/control_plane_lab/02_SONNET_BUILD_KICKOFF.md` | Sonnet Build Kickoff — Control-Plane Airflow Lab (Fasa 1) | — | — |
+| `architecture/control_plane_lab/03_PIPELINE_SIDE_CONTRACT.md` | Pipeline-Side Orchestration Contract (Fasa 0, Opus) | — | — |
+| `architecture/control_plane_lab/PROJECT_STATUS.md` | Control-Plane Airflow Lab — PROJECT STATUS (resume-safe checkpoint) | — | — |
+| `architecture/control_plane_lab/_source_to_port/doc_reference_contract.py` | Doc-reference contract — deterministic gate against documentation drift. | — | — |
+| `architecture/control_plane_lab/_source_to_port/gen_repo_map.py` | Repo-map generator — the NAVIGATION half of the ANTI-SHORTCUT PROTOCOL (see CLAUDE.md). | — | — |
+| `architecture/control_plane_lab/_source_to_port/governance_guard.py` | Governance hook — makes Claude check governed docs/ADRs BEFORE and AFTER touching governed files. | — | — |
+| `architecture/control_plane_lab/_source_to_port/sync_docs_to_confluence.py` | Publish the curated onboarding doc set to Confluence as living documentation. | — | — |
+| `architecture/control_plane_lab/saboteur/04_SONNET_HANDOVER.md` | Sonnet Handover — security layer + saboteur wiring (Fable-settled, 2026-07-04) | — | — |
+| `architecture/control_plane_lab/saboteur/INCIDENT_RUNBOOK.md` | Incident Runbook — the 8-phase lifecycle every troubleshoot drill follows | — | — |
+| `architecture/control_plane_lab/saboteur/PROBLEM_BANK_OPTIMIZATION.md` | Problem Bank — Optimization (100) | — | — |
+| `architecture/control_plane_lab/saboteur/PROBLEM_BANK_TROUBLESHOOT.md` | Problem Bank — Troubleshooting (100) | — | — |
+| `architecture/control_plane_lab/saboteur/README.md` | Saboteur Problem Bank — architecture (Fable design, 2026-07-04) | — | — |
 | `architecture/erd.dbml` | — | — | — |
+| `architecture/pipeline_retrofit/00_MASTER_SPEC.md` | Pipeline Retrofit — Master Spec (feed for Opus thinktank) | — | — |
+| `architecture/pipeline_retrofit/01_OPUS_DECISIONS.md` | Opus Decisions — Pipeline Retrofit (signed-off ruling) | — | — |
+| `architecture/pipeline_retrofit/02_SONNET_BUILD_KICKOFF.md` | Sonnet Build Kickoff — Pipeline Retrofit | — | — |
+| `architecture/pipeline_retrofit/PROJECT_STATUS.md` | Pipeline Retrofit — PROJECT STATUS (resume-safe checkpoint) | — | — |
+| `architecture/pipeline_retrofit/repo_archives/README.md` | repo_archives/ — full-history backups of the 4 ported repos | — | — |
+| `architecture/pipeline_retrofit/repo_archives/Volve-Sensor-Production-Analytics-Pipeline-porting.tar.gz` | — | — | — |
+| `architecture/pipeline_retrofit/repo_archives/home-credit-pipeline-porting.tar.gz` | — | — | — |
+| `architecture/pipeline_retrofit/repo_archives/olist-ecommerce-pipeline-porting.tar.gz` | — | — | — |
+| `architecture/pipeline_retrofit/repo_archives/paysim-fraud-pipeline-porting.tar.gz` | — | — | — |
 
 ## dbt — staging
 
@@ -178,8 +203,10 @@
 | File | Purpose | Uses | Used by |
 |------|---------|------|---------|
 | `dbt_project.yml` | — | — | — |
+| `framework_template/gates/framework.yml` | framework.yml — the ONE config every gate script in gates/ reads. | — | — |
 | `packages.yml` | — | — | — |
 | `profiles.yml` | Copy to ~/.dbt/profiles.yml (or set DBT_PROFILES_DIR to this folder). | — | — |
+| `simulation/sim_dbt/dbt_project.yml` | — | — | — |
 
 ## Ad-hoc analyses
 
@@ -231,11 +258,82 @@
 | `confluence/06_KNOWN_ISSUES.md` | Known Issues | — | — |
 | `confluence/07_INCIDENT_POSTMORTEM.md` | Incident Postmortem | — | — |
 | `confluence/08_DEPLOYMENT_GUIDE.md` | Deployment Guide | — | — |
+| `framework_template/00_START_HERE.md` | Framework Template — how to use this kit | — | — |
+| `framework_template/CHANGELOG.md` | Framework Template — Changelog | — | — |
+| `framework_template/governance/ADR/ADR-000-feature-intake-protocol.md` | ADR-000 — Feature Intake Protocol (ad-hoc feature control) | — | — |
+| `framework_template/governance/ADR/ADR-001-security-layer-mandatory.md` | ADR-001 (kit) — Security layer is mandatory, not tiered | — | — |
+| `framework_template/governance/ADR/ADR-TEMPLATE.md` | ADR-NNN — {{Title}} | — | — |
+| `framework_template/governance/BACKLOG.md` | Backlog — rejected / deferred ledger | — | — |
+| `framework_template/governance/BOUNDARY_CONTRACT.md` | Boundary Contract — {{PROJECT}} | — | — |
+| `framework_template/governance/plans/PLAN_TEMPLATE.md` | Plan — {{feature/change name}} | — | — |
+| `framework_template/journey/01_DATASET_AND_SOURCES.md` | 01 — Dataset & Sources | — | — |
+| `framework_template/journey/02_BUSINESS_QUESTIONS.md` | 02 — Business Questions (BRD-lite) | — | — |
+| `framework_template/journey/03_DATA_REQUIREMENTS.md` | 03 — Data Requirements (DRD) | — | — |
+| `framework_template/journey/04_DATA_MODEL.md` | 04 — Data Model | — | — |
+| `framework_template/journey/05_STTM.md` | 05 — Source-to-Target Mapping (STTM) | — | — |
+| `framework_template/journey/06_DQ_PLAN.md` | 06 — Data Quality Plan (DQD) | — | — |
+| `framework_template/journey/07_PIPELINE_SPEC.md` | 07 — Pipeline Spec | — | — |
+| `framework_template/journey/08_SERVING_AND_EVIDENCE.md` | 08 — Serving & Evidence | — | — |
+| `framework_template/journey/09_SECURITY_AND_ACCESS.md` | 09 — Security & Access | — | — |
+| `framework_template/operating/agents/architect.md` | name: architect | — | — |
+| `framework_template/operating/agents/data-quality-steward.md` | name: data-quality-steward | — | — |
+| `framework_template/operating/agents/finops-agent.md` | name: finops-agent | — | — |
+| `framework_template/operating/agents/product-owner.md` | name: product-owner | — | — |
+| `framework_template/operating/agents/scope-guardian.md` | name: scope-guardian | — | — |
+| `framework_template/operating/agents/senior-data-engineer.md` | name: senior-data-engineer | — | — |
+| `interview_prep/FULL_PROJECT_DEFENSE.md` | Full Project Defense — Five Data Pipelines (prose, copy-paste ready) | — | — |
+| `interview_prep/INTERVIEW_MASTER.md` | Interview Master — Full Prep Bundle | — | — |
+| `interview_prep/OPTIMIZATION_AND_TROUBLESHOOTING_DEEP_DIVE.md` | Optimization & Troubleshooting — Deep Drill-Down (2–3 layers per decision) | — | — |
+| `simulation/.solutions/O-O01_full_scan.md` | 🔒 GATED SOLUTION — O-O01 Read the Plan (full scan) | — | — |
+| `simulation/.solutions/T-L01_dup_pk.md` | 🔒 GATED SOLUTION — T-L01 Duplicate PK | — | — |
+| `simulation/.solutions/T-SEC-01_leaked_key.md` | 🔒 GATED SOLUTION — T-SEC-01 Leaked Credential (8-phase incident) | — | — |
+| `simulation/.solutions/T-SRV-04_rbac_future_grant.md` | 🔒 GATED SOLUTION — T-SRV-04 RBAC Future Grant | — | — |
+| `simulation/00_MASTER_PLAN.md` | RBC Simulation Lab — Master Plan | — | — |
+| `simulation/CARD_FORMAT.md` | Card Format — drill writeups & runbook entries | — | — |
+| `simulation/CIKGU_DRILL_PROTOCOL.md` | Cikgu Drill Protocol — how a drill session runs | — | — |
+| `simulation/HINT_LOG.md` | Hint Log — which hint level unblocked each drill | — | — |
+| `simulation/ISOLATION_CONTRACT.md` | Isolation Contract — RBC Simulation Lab | — | — |
+| `simulation/LADDERS.md` | Difficulty Ladders — Troubleshooting (T) & Optimization (O) | — | — |
+| `simulation/PEDAGOGY_PREFS.md` | Pedagogy Preferences — How Luqman Learns | — | — |
+| `simulation/SONNET_KICKOFF_PROMPT.md` | Sonnet kickoff prompt — RBC Simulation Lab execution | — | — |
+| `simulation/drills/O-O01_full_scan.md` | Drill O-O01 — Read the Plan (the full scan) | — | — |
+| `simulation/drills/T-L01_dup_pk.md` | Drill T-L01 — Duplicate PK (the inflated number) | — | — |
+| `simulation/drills/T-SEC-01_leaked_key.md` | Drill T-SEC-01 — Credential leaked to git (full 8-phase incident) | — | — |
+| `simulation/drills/T-SRV-04_rbac_future_grant.md` | Drill T-SRV-04 — New Gold model invisible to the analyst role | — | — |
+| `simulation/faults/README.md` | Fault Library — the @bottleneck-saboteur, as a tool | — | — |
+| `simulation/faults/catalog/CIL_INJECTABLE_MAP.md` | CIL Injectable Map — which bank T-IDs run against this repo's real stack today | — | — |
+| `simulation/runbook/T-L01_dup_pk.md` | T-L01 — Duplicate PK in silver_chunk ✅ PASSED | — | — |
+| `simulation/sim_dbt/README.md` | sim_dbt — isolated simulation dbt project | — | — |
+| `simulation/specs/01_SIM_migration_dryrun.md` | Sim #1 — Migration Dry-Run (Teradata → Snowflake logic migration) | — | — |
+| `simulation/specs/02_SIM_pyspark_parity.md` | Sim #2 — PySpark Parity (close the "no Spark" gap) | — | — |
+| `simulation/specs/03_SIM_incident_e2e.md` | Sim #3 — Incident End-to-End (troubleshooting drill) | — | — |
+| `simulation/specs/04_SIM_value_reconciliation.md` | Sim #4 — Value-Level Reconciliation (the headline banking skill) | — | — |
+| `simulation/specs/05_OPTIMIZATION_LAB.md` | Sim #5 — Optimization Lab (profile → tune → measure) | — | — |
+| `simulation/specs/06_RBC_TASK_MAP.md` | RBC Day-to-Day Task Map (100) — tagged by lab simulatability | — | — |
+| `simulation/specs/07_INTERVIEW_CHEATSHEET.md` | RBC Interview Cheat-Sheet — STAR stories from the sim lab | — | — |
 
 ## Other
 
 | File | Purpose | Uses | Used by |
 |------|---------|------|---------|
+| `framework_template/gates/_config.py` | Shared config loader for gates/*.py — reads gates/framework.yml. | — | boundary_contract.py, doc_reference_contract.py, governance_guard.py, journey_completeness.py, secrets_scan.py |
+| `framework_template/gates/boundary_contract.py` | Stack + scope boundary contract — config-driven, reads gates/framework.yml. | _config.py | — |
+| `framework_template/gates/ci.yml.template` | — | — | — |
+| `framework_template/gates/doc_reference_contract.py` | Doc-reference contract — config-driven, reads gates/framework.yml → paths:. | _config.py | — |
+| `framework_template/gates/hooks/governance_guard.py` | Governance hook — config-driven, reads gates/framework.yml → governed_paths:. | _config.py | — |
+| `framework_template/gates/journey_completeness.py` | Journey completeness gate — every mandatory journey/*.md doc must exist and be filled in. | _config.py | — |
+| `framework_template/gates/secrets_scan.py` | Secrets scan gate — config-driven, reads gates/framework.yml secrets_scan:. | _config.py | — |
+| `framework_template/operating/CLAUDE.md.template` | — | — | — |
+| `framework_template/operating/PROJECT_STATUS.md.template` | — | — | — |
+| `interview_repos_output/1_volve_sensor_pipeline.txt` | — | — | — |
+| `interview_repos_output/2_paysim_fraud_pipeline.txt` | — | — | — |
+| `interview_repos_output/3_olist_ecommerce_pipeline.txt` | — | — | — |
+| `interview_repos_output/4_home_credit_pipeline.txt` | — | — | — |
+| `interview_repos_output/5_creative_intelligence_lab.txt` | — | — | — |
 | `macros/s3_external.sql` | (no leading -- comment) | — | — |
 | `requirements-airflow.txt` | — | — | — |
 | `requirements.txt` | — | — | — |
+| `simulation/check_isolation.py` | Isolation guard for the RBC simulation lab (simulation/). | — | — |
+| `simulation/faults/inject.py` | faults/inject.py — the @bottleneck-saboteur as a TOOL (not a roster agent). | — | — |
+| `simulation/faults/reset.py` | faults/reset.py — restore the sim lab's clean baseline (total undo of any injected fault). | — | — |
+| `simulation/sim_dbt/profiles.sim.yml.example` | — | — | — |

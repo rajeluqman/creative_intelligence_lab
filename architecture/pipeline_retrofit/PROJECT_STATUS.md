@@ -5,12 +5,55 @@
 > Branch: `framework/pipeline-retrofit-plan`. Plan docs in this same folder (00/01/02).
 
 ## ▶ RESUME HERE (read this first)
+**ALL 4 REPOS PUSHED + PRs OPEN (2026-06-29):** owner supplied a PAT (classic `repo` scope,
+Codespace secret `GH_PUSH_TOKEN`, repo-scoped to CIL). Pushed all 4 `framework/governance-retrofit`
+branches via `git push https://rajeluqman:${GH_PUSH_TOKEN}@github.com/rajeluqman/<repo>.git
+framework/governance-retrofit:framework/governance-retrofit`, then `gh pr create` per repo
+(base=main, head=framework/governance-retrofit) with `GH_TOKEN` set per-command (NOT
+`gh auth login --with-token`, which would have persisted the PAT into the global `gh` credential
+store beyond this task's scope). PRs:
+- home-credit-pipeline: https://github.com/rajeluqman/home-credit-pipeline/pull/1
+- olist-ecommerce-pipeline: https://github.com/rajeluqman/olist-ecommerce-pipeline/pull/1
+- paysim-fraud-pipeline: https://github.com/rajeluqman/paysim-fraud-pipeline/pull/1
+- Volve-Sensor-Production-Analytics-Pipeline: https://github.com/rajeluqman/Volve-Sensor-Production-Analytics-Pipeline/pull/3
+
+Note: the home-credit push used `-u` (set-upstream), which embedded the PAT into the local
+branch's tracking URL in `.git/config` (a credential-on-disk risk) — caught and cleaned up
+immediately (`git config --unset branch.framework/governance-retrofit.{remote,merge}`); the
+remaining 3 pushes omitted `-u` to avoid the same issue. The PAT itself lives only in the
+Codespace secret `GH_PUSH_TOKEN`, never written to any file in this repo or memory.
+
+**Week-1-readability doc pass + push attempt (2026-06-29, Opus session):**
+- **Doc gap closed on all 4 repos** (owner-approved: all-4 scope, evidence DEFERRED, no fabricated
+  metrics). Each README now has **Purpose / Business-Questions / Results&Evidence** sections;
+  each `confluence/00_START_HERE.md` answers "why it exists / what it answers / what's proven vs
+  not" up front (home-credit's landing page was created + registered in its sync PUBLISH_SET +
+  README added to the set). New commits: home-credit `bdc8966`, olist `e3a48cb`, paysim `7c60ccb`,
+  Volve `b6c99eb`. All re-archived in `repo_archives/`.
+- **Gates:** the CI-run doc-ref check (`docs/` default) + boundary contract are GREEN on all 4.
+  README-scoped doc-ref is green on home-credit/paysim/Volve. paysim needed 2 reasoned ALLOW
+  entries (`fact_transactions`/`fact_customer_daily_balance` are real Silver Delta tables, not dbt
+  models — the C1 check over-matches). **olist has 1 PRE-EXISTING README drift** (line ~151: a
+  screenshot link is `%20`-encoded but the file on disk has a literal space; the C2 check doesn't
+  decode `%20`). NOT introduced by this pass, NOT gating CI (CI scans `docs/`, not README).
+  ⏳ **Open decision for owner:** fix olist by renaming the spaced screenshot files (best practice)
+  or teach the contract to `unquote()` `%20` — left untouched pending owner call.
+- **PUSH STILL BLOCKED — real cause now confirmed:** the codespace's auto `GITHUB_TOKEN` (`ghu_…`)
+  only has WRITE to `creative_intelligence_lab` (its parent repo). Push to all 4 external repos
+  returns **403** ("denied to rajeluqman"); read (`ls-remote`) works because they're public.
+  `gh api …/permissions` showing `push:true` is the *account* capability, NOT the token's scope —
+  do not be misled by it. **To push: owner must supply a PAT** (classic `repo` scope, or
+  fine-grained Contents:write+PR:write on the 4 repos), then `git push -u origin
+  framework/governance-retrofit` + `gh pr create` per repo. Original "owner cannot push" KIV was
+  correct for writes.
+
 **Where we are: ALL 4 REPOS DONE.** home-credit-pipeline, olist-ecommerce-pipeline,
 paysim-fraud-pipeline, AND Volve-Sensor-Production-Analytics-Pipeline are all DONE on their own
 local `framework/governance-retrofit` branches (home-credit commit `bef4714`, olist commit
 `f17e225`, paysim commit `6a8aa10`, **Volve commit `08a12dc`**) — see checklists below, all four
-independently re-verified (contracts run directly, not just trusting the build report). This
-closes out the porting effort itself; only push/PR remains, owned by Opus (see below).
+independently re-verified (contracts run directly, not just trusting the build report). All 4
+are now ALSO pushed with PRs open (see ▶ RESUME HERE above) — the porting effort + push/PR step
+are both fully closed.
 **Volve build (2026-06-29):** built directly in the main session per owner instruction (no
 nested sub-agent delegation). Ground-truth read found Volve has the worst doc accuracy of the
 4 repos — `docs/BRD.md`/`DRD.md`/`DQD.md`/`PIPELINE_SPEC.md` are stale v1.0, describing an
@@ -49,9 +92,8 @@ storage across repos. Removing genuinely dead/unreachable code within ONE repo (
 unused, confirmed broken) is fine; swapping a repo's real, working storage/compute choice to
 match another repo is NOT — that would be the actual "tukar stack suka hati" the owner pushed
 back on.
-**Push deferred (owner decision 2026-06-28, reconfirmed 2026-06-29):** owner cannot push from
-this environment — KIV all 4 repos' push+PR step. **Next action: Opus settles all 4 repos'
-pushes/PRs in one pass.** Do not block on this; do not attempt to push from this session.
+**Push deferred (owner decision 2026-06-28, reconfirmed 2026-06-29) — RESOLVED 2026-06-29:**
+owner supplied PAT `GH_PUSH_TOKEN`; all 4 repos' push+PR step is now done (see ▶ RESUME HERE).
 **Archived 2026-06-29 (owner request — `/workspaces/*-porting` clones are ephemeral and have
 already been lost once before):** all 4 repos backed up as full-history `.tar.gz` (the actual
 clone incl. `.git`, not a file snapshot) in
@@ -71,7 +113,7 @@ of re-running the retrofit.
 ## Per-repo build checklist (tick as done; evidence = file:line, not "done")
 Legend: ⬜ todo · 🟡 in progress · ✅ done+verified
 
-### home-credit-pipeline (TEMPLATE — do first) — ✅ built, ⬜ unpushed
+### home-credit-pipeline (TEMPLATE — do first) — ✅ built, ✅ pushed
 Evidence: `/workspaces/home-credit-pipeline-porting` branch `framework/governance-retrofit`,
 commit 57bdfd5. Verified by reading the branch tree directly 2026-06-28.
 - ✅ CLAUDE.md (real Glue/Snowflake stack, governed-file map)
@@ -90,10 +132,10 @@ commit 57bdfd5. Verified by reading the branch tree directly 2026-06-28.
 - ✅ INTERVIEW_GUIDE.md present
 - ✅ .github/workflows/ci.yml — confirmed wires ruff/pytest + the 3 contracts (CI has no AWS
   OIDC role yet, so it's static-gates-only — named gap, not silently skipped)
-- ⬜ **push feature branch + PR — NOT DONE.** `git ls-remote --heads origin` shows only `main`;
-  `framework/governance-retrofit` (commit 57bdfd5) is local-only.
+- ✅ **push feature branch + PR — DONE 2026-06-29.** PR:
+  https://github.com/rajeluqman/home-credit-pipeline/pull/1
 
-### olist-ecommerce-pipeline — ✅ built, ⬜ unpushed
+### olist-ecommerce-pipeline — ✅ built, ✅ pushed
 Evidence: `/workspaces/olist-ecommerce-pipeline-porting` branch `framework/governance-retrofit`,
 commit `c632fce`. Verified directly 2026-06-29 — ran all 4 contracts myself (not just trusting
 the build report): `tests/identity_contract.py`, `tests/boundary_contract.py`,
@@ -116,10 +158,10 @@ the build report): `tests/identity_contract.py`, `tests/boundary_contract.py`,
   check_isolation.py, faults/, 4 drill specs) — isolation contract passes
 - ✅ .github/workflows/ci.yml — created fresh (olist had none), wires the 3 contracts +
   repo-map --check + isolation check
-- ⬜ **push feature branch + PR — NOT DONE** (owner cannot push from this environment, KIV'd
-  2026-06-29 — same as home-credit; Opus settles all 4 repos' pushes in one pass later)
+- ✅ **push feature branch + PR — DONE 2026-06-29.** PR:
+  https://github.com/rajeluqman/olist-ecommerce-pipeline/pull/1
 
-### paysim-fraud-pipeline — ✅ built, ⬜ unpushed
+### paysim-fraud-pipeline — ✅ built, ✅ pushed
 Evidence: `/workspaces/paysim-fraud-pipeline-porting` branch `framework/governance-retrofit`,
 commit `c5724c6`. Verified directly 2026-06-29 — ran all 5 gates myself (not just trusting the
 build report): `tests/identity_contract.py`, `tests/boundary_contract.py`,
@@ -165,10 +207,10 @@ build report): `tests/identity_contract.py`, `tests/boundary_contract.py`,
   `silver/silver_pipeline.py`/`cumulative_pipeline.py` ground truth. All 5 gates re-run green
   after both fixes (`identity_contract.py`, `boundary_contract.py`, `doc_reference_contract.py`,
   `check_isolation.py`, `gen_repo_map.py --check`).
-- ⬜ **push feature branch + PR — NOT DONE** (owner cannot push from this environment, KIV'd
-  2026-06-29 — same as home-credit/olist; Opus settles all 4 repos' pushes in one pass later)
+- ✅ **push feature branch + PR — DONE 2026-06-29.** PR:
+  https://github.com/rajeluqman/paysim-fraud-pipeline/pull/1
 
-### Volve-Sensor-Production-Analytics-Pipeline (most work — LAST) — ✅ built, ⬜ unpushed
+### Volve-Sensor-Production-Analytics-Pipeline (most work — LAST) — ✅ built, ✅ pushed
 Evidence: `/workspaces/Volve-Sensor-Production-Analytics-Pipeline-porting` branch
 `framework/governance-retrofit`, commit `08a12dc`. Verified directly 2026-06-29 — ran all 3
 contracts + repo-map `--check` + sim isolation myself: `tests/identity_contract.py`,
@@ -216,8 +258,8 @@ contracts + repo-map `--check` + sim isolation myself: `tests/identity_contract.
 - ✅ .gitignore — same "JANGAN COMMIT" pattern as the other 3 repos (excluded CLAUDE.md/
   .claude//PROJECT_STATUS.md, and uniquely also `.github/`); amended with an explicit
   "now INTENTIONALLY committed" note, all retrofit artifacts tracked in the commit
-- ⬜ **push feature branch + PR — NOT DONE** (owner cannot push from this environment, KIV'd
-  2026-06-29 — same as the other 3; Opus settles all 4 repos' pushes in one pass)
+- ✅ **push feature branch + PR — DONE 2026-06-29.** PR:
+  https://github.com/rajeluqman/Volve-Sensor-Production-Analytics-Pipeline/pull/3
 
 ## Known resume↔repo mismatches (must resolve during build)
 - olist: resume "ADF" ✗ repo Databricks COPY INTO — ✅ resolved, flagged in INTERVIEW_GUIDE.md
@@ -235,5 +277,13 @@ contracts + repo-map `--check` + sim isolation myself: `tests/identity_contract.
   delegation, per owner instruction. Largest doc/code gap of the 4 repos found and handled via
   AskUserQuestion before any change: orphaned NiFi/Glue stubs flagged-not-deleted; empty
   tests/data_quality dirs documented + false README/resume claims corrected, real test/GE-suite
-  build explicitly deferred. This closes the 4-repo porting effort — only push/PR remains,
+  build explicitly deferred. This closes the 4-repo porting effort — only push/PR remained,
   owned by Opus across all 4 repos in one pass.
+- 2026-06-29: Push+PR pass completed for all 4 repos using owner-supplied PAT (Codespace secret
+  `GH_PUSH_TOKEN`). PRs: home-credit #1, olist #1, paysim #1, Volve #3 (all base=main, head=
+  framework/governance-retrofit). Used `GH_TOKEN=<token> gh pr create` per-command rather than
+  `gh auth login --with-token`, to avoid persisting the PAT into the global `gh` credential
+  store. Caught and fixed one credential-hygiene slip: the home-credit push used `git push -u`,
+  which embedded the PAT into `.git/config`'s branch-tracking URL — removed via `git config
+  --unset branch.framework/governance-retrofit.{remote,merge}` immediately after. Token lives
+  only in the Codespace secret, never committed or written to memory.

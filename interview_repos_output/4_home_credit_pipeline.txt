@@ -1,0 +1,5521 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+airflow/
+  dags/
+    bronze_ingestion_dag.py
+    gold_dbt_dag.py
+    pipeline_dag.py
+    silver_transforms_dag.py
+bronze/
+  download_dataset.py
+  generate_dev_data.py
+  ingest_bronze.py
+dbt_home_credit/
+  macros/
+    generate_surrogate_key.sql
+  models/
+    intermediate/
+      int_applicant_attributes.sql
+      int_bureau_with_balance.sql
+      int_installment_payments.sql
+      schema.yml
+    mart/
+      dim_applicant.sql
+      dim_credit_status.sql
+      dim_loan_type.sql
+      fact_bureau_credit.sql
+      fact_installment_payment.sql
+      fact_loan_application.sql
+      schema.yml
+    staging/
+      schema.yml
+      stg_application.sql
+      stg_bureau_balance.sql
+      stg_bureau.sql
+      stg_installments.sql
+  snapshots/
+    snap_applicant.sql
+  tests/
+    assert_fk_bureau_credit_applicant.sql
+    assert_fk_loan_application_applicant.sql
+    assert_scd2_one_current_per_applicant.sql
+  dbt_project.yml
+  profiles.yml
+  sources.yml
+docs/
+  ADR/
+    ADR-001-kimball-star-schema.md
+  ARCHITECTURE.md
+  BRD.md
+  DATA_DICTIONARY.md
+  DATA_MODEL.md
+  DQD.md
+  DRD.md
+  OPS_RUNBOOK.md
+  PIPELINE_SPEC.md
+glue/
+  glue_silver_application.py
+  glue_silver_balance_tables.py
+  glue_silver_bureau.py
+  glue_silver_installments.py
+  glue_silver_previous_application.py
+gold/
+  profiles.yml
+gx/
+  great_expectations.yml
+  run_bronze_suite.py
+  run_silver_suite.py
+silver/
+  transforms.py
+tests/
+  unit/
+    test_bronze_ingest.py
+    test_silver_transforms.py
+.env.example
+.gitignore
+.mcp.json
+README.md
+requirements.txt
+setup.sh
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="airflow/dags/bronze_ingestion_dag.py">
+"""
+bronze_ingestion_dag — ingest all 7 tables → Bronze Delta/S3, then GX, then trigger Silver.
+
+Schedule: @daily (staging/prod) | None (dev — manual trigger)
+"""
+
+import os
+from datetime import datetime, timedelta
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.providers.slack.operators.slack_webhook import SlackWebhookOperator
+
+ENV = os.getenv("ENV", "dev")
+
+default_args = {
+    "owner": "raja-luqman",
+    "depends_on_past": False,
+    "start_date": datetime(2024, 1, 1),
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+}
+
+TABLES = [
+    "application_train",
+    "bureau",
+    "bureau_balance",
+    "previous_application",
+    "installments_payments",
+    "POS_CASH_balance",
+    "credit_card_balance",
+]
+
+
+def _download_kaggle(**ctx):
+    from bronze.download_dataset import load_env, validate_kaggle_credentials, download_competition_dataset, sample_dev_data
+    load_env(ENV)
+    validate_kaggle_credentials()
+    data_dir = download_competition_dataset()
+    if ENV == "dev":
+        sample_dev_data(data_dir, rows=1000)
+
+
+def _ingest_table(table: str, **ctx):
+    from bronze.ingest_bronze import run
+    ingestion_date = ctx["ds"]
+    result = run(table=table, env=ENV, ingestion_date=ingestion_date)
+    if result["rows_written"] == 0:
+        raise RuntimeError(f"No rows written for {table} — check source data")
+
+
+def _run_gx_bronze(**ctx):
+    from gx.run_bronze_suite import run
+    run(env=ENV, ingestion_date=ctx["ds"])
+
+
+def _slack_fail(context):
+    SlackWebhookOperator(
+        task_id="slack_fail",
+        slack_webhook_conn_id="slack_webhook",
+        message=f"❌ *bronze_ingestion_dag* FAILED | task: {context['task_instance'].task_id} | {context['ds']}",
+    ).execute(context)
+
+
+with DAG(
+    dag_id="bronze_ingestion_dag",
+    default_args={**default_args, "on_failure_callback": _slack_fail},
+    schedule_interval="@daily" if ENV != "dev" else None,
+    catchup=False,
+    tags=["bronze", "ingestion"],
+) as dag:
+
+    download = PythonOperator(
+        task_id="download_kaggle_data",
+        python_callable=_download_kaggle,
+    )
+
+    ingest_tasks = [
+        PythonOperator(
+            task_id=f"ingest_{table}_bronze",
+            python_callable=_ingest_table,
+            op_kwargs={"table": table},
+        )
+        for table in TABLES
+    ]
+
+    gx_bronze = PythonOperator(
+        task_id="run_gx_bronze_suite",
+        python_callable=_run_gx_bronze,
+    )
+
+    trigger_silver = TriggerDagRunOperator(
+        task_id="trigger_silver_dag",
+        trigger_dag_id="silver_transforms_dag",
+        wait_for_completion=False,
+    )
+
+    download >> ingest_tasks >> gx_bronze >> trigger_silver
+</file>
+
+<file path="airflow/dags/gold_dbt_dag.py">
+"""
+gold_dbt_dag — dbt run (staging → snapshot → intermediate → mart) → dbt test → Slack.
+
+Schedule: None (triggered by silver_transforms_dag via TriggerDagRunOperator)
+dbt project: dbt_home_credit/ | profiles: dbt_home_credit/profiles.yml
+"""
+
+import os
+from datetime import datetime, timedelta
+
+from airflow import DAG
+from airflow.operators.bash import BashOperator
+from airflow.providers.slack.operators.slack_webhook import SlackWebhookOperator
+from airflow.utils.trigger_rule import TriggerRule
+
+ENV = os.getenv("ENV", "dev")
+DBT_DIR = "dbt_home_credit"
+DBT_CMD = f"dbt --profiles-dir {DBT_DIR} --project-dir {DBT_DIR}"
+
+default_args = {
+    "owner": "raja-luqman",
+    "depends_on_past": False,
+    "start_date": datetime(2024, 1, 1),
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+}
+
+
+def _slack_alert(icon: str, context):
+    task_id = context["task_instance"].task_id
+    ds = context["ds"]
+    duration = int((context["task_instance"].end_date - context["task_instance"].start_date).total_seconds()) if context["task_instance"].end_date else 0
+    msg = f"[{ENV}] gold_dbt_dag {icon} | {ds} | task: {task_id} | {duration}s"
+    SlackWebhookOperator(
+        task_id="slack_notify",
+        slack_webhook_conn_id="slack_webhook",
+        message=msg,
+    ).execute(context)
+
+
+with DAG(
+    dag_id="gold_dbt_dag",
+    default_args=default_args,
+    schedule_interval=None,
+    catchup=False,
+    tags=["gold", "dbt", "snowflake"],
+) as dag:
+
+    dbt_staging = BashOperator(
+        task_id="dbt_run_staging",
+        bash_command=f"{DBT_CMD} run --select staging --target {ENV}",
+    )
+
+    dbt_snapshot = BashOperator(
+        task_id="dbt_snapshot",
+        bash_command=f"{DBT_CMD} snapshot --target {ENV}",
+    )
+
+    dbt_intermediate = BashOperator(
+        task_id="dbt_run_intermediate",
+        bash_command=f"{DBT_CMD} run --select intermediate --target {ENV}",
+    )
+
+    dbt_mart = BashOperator(
+        task_id="dbt_run_mart",
+        bash_command=f"{DBT_CMD} run --select mart --target {ENV}",
+    )
+
+    dbt_test = BashOperator(
+        task_id="dbt_test",
+        bash_command=f"{DBT_CMD} test --target {ENV}",
+    )
+
+    slack_success = BashOperator(
+        task_id="slack_notify_success",
+        bash_command=f'curl -s -X POST "$SLACK_WEBHOOK_URL" -H "Content-Type: application/json" -d \'{{"text":"[{ENV}] gold_dbt_dag ✅ PASS | {{{{ ds }}}}"}}\'',
+        trigger_rule=TriggerRule.ALL_SUCCESS,
+    )
+
+    slack_failure = BashOperator(
+        task_id="slack_notify_failure",
+        bash_command=f'curl -s -X POST "$SLACK_WEBHOOK_URL" -H "Content-Type: application/json" -d \'{{"text":"[{ENV}] gold_dbt_dag ❌ FAIL | {{{{ ds }}}}"}}\'',
+        trigger_rule=TriggerRule.ONE_FAILED,
+    )
+
+    dbt_staging >> dbt_snapshot >> dbt_intermediate >> dbt_mart >> dbt_test >> [slack_success, slack_failure]
+</file>
+
+<file path="airflow/dags/pipeline_dag.py">
+"""
+Home Credit Risk Pipeline — Main DAG
+Modelling : Kimball — Star Schema
+Stack     : AWS Glue (Bronze+Silver) → dbt (Gold/Snowflake)
+Schedule  : @daily
+"""
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.operators.bash import BashOperator
+from airflow.providers.slack.operators.slack_webhook import SlackWebhookOperator
+from datetime import datetime, timedelta
+
+default_args = {
+    'owner': 'raja-luqman',
+    'depends_on_past': False,
+    'start_date': datetime(2024, 1, 1),
+    'retries': 2,
+    'retry_delay': timedelta(minutes=5),
+}
+
+def slack_success(context):
+    SlackWebhookOperator(
+        task_id='slack_success',
+        slack_webhook_conn_id='slack_webhook',
+        message=f"✅ *home-credit-risk-pipeline* — Success | {context['ds']}",
+    ).execute(context)
+
+def slack_failure(context):
+    SlackWebhookOperator(
+        task_id='slack_failure',
+        slack_webhook_conn_id='slack_webhook',
+        message=f"❌ *home-credit-risk-pipeline* — FAILED: {context['task_instance'].task_id} | {context['ds']}",
+    ).execute(context)
+
+with DAG(
+    dag_id='home_credit_risk_pipeline',
+    default_args=default_args,
+    schedule_interval='@daily',
+    catchup=False,
+    on_success_callback=slack_success,
+    on_failure_callback=slack_failure,
+    tags=['banking', 'credit-risk', 'kimball'],
+) as dag:
+
+    bronze_ingest = PythonOperator(
+        task_id='bronze_ingest_7_tables',
+        python_callable=lambda: __import__('bronze.bronze_pipeline', fromlist=['']).run(),
+    )
+
+    silver_glue = PythonOperator(
+        task_id='silver_glue_transform',
+        python_callable=lambda: __import__('silver.trigger_glue_job', fromlist=['']).run(),
+    )
+
+    silver_dq = PythonOperator(
+        task_id='silver_dq_gx_check',
+        python_callable=lambda: __import__('data_quality.run_silver_suite', fromlist=['']).run(),
+    )
+
+    gold_run = BashOperator(
+        task_id='gold_dbt_run',
+        bash_command='dbt run --profiles-dir gold --project-dir gold',
+    )
+
+    gold_test = BashOperator(
+        task_id='gold_dbt_test',
+        bash_command='dbt test --profiles-dir gold --project-dir gold',
+    )
+
+    bronze_ingest >> silver_glue >> silver_dq >> gold_run >> gold_test
+</file>
+
+<file path="airflow/dags/silver_transforms_dag.py">
+"""
+silver_transforms_dag — trigger 5 Glue jobs → GX silver suite → trigger Gold.
+
+Schedule: None (triggered by bronze_ingestion_dag via TriggerDagRunOperator)
+Dependency: glue_silver_bureau depends on glue_silver_application (RI check in GX).
+"""
+
+import os
+from datetime import datetime, timedelta
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.providers.amazon.aws.operators.glue import GlueJobOperator
+from airflow.providers.slack.operators.slack_webhook import SlackWebhookOperator
+
+ENV = os.getenv("ENV", "dev")
+BUCKET = os.getenv(f"S3_BUCKET_{ENV.upper()}", f"home-credit-risk-{ENV}")
+
+default_args = {
+    "owner": "raja-luqman",
+    "depends_on_past": False,
+    "start_date": datetime(2024, 1, 1),
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+}
+
+GLUE_ARGS = {
+    "--env": ENV,
+    "--date": "{{ ds }}",
+    "--bucket": BUCKET,
+}
+
+
+def _run_gx_silver(**ctx):
+    from gx.run_silver_suite import run
+    run(env=ENV, ingestion_date=ctx["ds"])
+
+
+def _slack_fail(context):
+    SlackWebhookOperator(
+        task_id="slack_fail",
+        slack_webhook_conn_id="slack_webhook",
+        message=f"❌ *silver_transforms_dag* FAILED | task: {context['task_instance'].task_id} | {context['ds']}",
+    ).execute(context)
+
+
+with DAG(
+    dag_id="silver_transforms_dag",
+    default_args={**default_args, "on_failure_callback": _slack_fail},
+    schedule_interval=None,
+    catchup=False,
+    tags=["silver", "glue"],
+) as dag:
+
+    glue_application = GlueJobOperator(
+        task_id="glue_silver_application",
+        job_name="glue_silver_application",
+        script_args=GLUE_ARGS,
+        aws_conn_id="aws_default",
+        region_name=os.getenv("AWS_REGION", "ap-southeast-1"),
+        num_of_dpus=2,
+    )
+
+    # Depends on application completing first — referential integrity GX check
+    glue_bureau = GlueJobOperator(
+        task_id="glue_silver_bureau",
+        job_name="glue_silver_bureau",
+        script_args=GLUE_ARGS,
+        aws_conn_id="aws_default",
+        region_name=os.getenv("AWS_REGION", "ap-southeast-1"),
+        num_of_dpus=2,
+    )
+
+    glue_prev_app = GlueJobOperator(
+        task_id="glue_silver_prev_app",
+        job_name="glue_silver_previous_application",
+        script_args=GLUE_ARGS,
+        aws_conn_id="aws_default",
+        region_name=os.getenv("AWS_REGION", "ap-southeast-1"),
+        num_of_dpus=2,
+    )
+
+    glue_installments = GlueJobOperator(
+        task_id="glue_silver_installments",
+        job_name="glue_silver_installments",
+        script_args=GLUE_ARGS,
+        aws_conn_id="aws_default",
+        region_name=os.getenv("AWS_REGION", "ap-southeast-1"),
+        num_of_dpus=2,
+    )
+
+    glue_balance = GlueJobOperator(
+        task_id="glue_silver_balance_tables",
+        job_name="glue_silver_balance_tables",
+        script_args=GLUE_ARGS,
+        aws_conn_id="aws_default",
+        region_name=os.getenv("AWS_REGION", "ap-southeast-1"),
+        num_of_dpus=2,
+    )
+
+    gx_silver = PythonOperator(
+        task_id="run_gx_silver_suite",
+        python_callable=_run_gx_silver,
+    )
+
+    trigger_gold = TriggerDagRunOperator(
+        task_id="trigger_gold_dag",
+        trigger_dag_id="gold_dbt_dag",
+        wait_for_completion=False,
+    )
+
+    # Dependency chain per PIPELINE_SPEC Section 5.2
+    glue_application >> glue_bureau
+    glue_application >> [glue_prev_app, glue_installments, glue_balance]
+    [glue_bureau, glue_prev_app, glue_installments, glue_balance] >> gx_silver >> trigger_gold
+</file>
+
+<file path="bronze/download_dataset.py">
+"""
+WHAT : Download Home Credit dataset dari Kaggle Competition API
+WHY  : Competition format berbeza dari standard dataset — kena guna
+       kaggle competitions download, BUKAN kaggle datasets download
+WHEN : Run sekali sebelum pipeline start
+
+CRITICAL: ini Kaggle COMPETITION, bukan standard dataset.
+Command: kaggle competitions download -c home-credit-default-risk
+
+Usage:
+  python bronze/download_dataset.py --env dev
+  python bronze/download_dataset.py --env staging
+  python bronze/download_dataset.py --env prod
+"""
+
+import os
+import argparse
+import logging
+import zipfile
+from pathlib import Path
+from dotenv import load_dotenv
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger(__name__)
+
+# WHAT: 7 source files untuk Home Credit pipeline
+# WHY : Semua kena ingest untuk justify "7 disparate source tables" dalam resume
+ALL_FILES = [
+    "application_train.csv",
+    "bureau.csv",
+    "bureau_balance.csv",
+    "previous_application.csv",
+    "installments_payments.csv",
+    "POS_CASH_balance.csv",
+    "credit_card_balance.csv",
+]
+
+PRIMARY_FILE = "application_train.csv"
+
+
+def load_env(env: str):
+    """
+    WHAT : Load .env file ikut environment
+    WHY  : Setiap env ada credentials berbeza
+    WHEN : First step sebelum any operation
+    """
+    env_file = f".env.{env}"
+    if not Path(env_file).exists():
+        raise FileNotFoundError(
+            f"{env_file} tidak wujud.\n"
+            f"Run: cp .env.example {env_file} dan fill in credentials."
+        )
+    load_dotenv(env_file)
+    log.info(f"Loaded {env_file}")
+
+
+def validate_kaggle_credentials():
+    """
+    WHAT : Validate Kaggle credentials
+    WHY  : Fail fast sebelum API call
+    WHEN : Sebelum download
+    """
+    username = os.getenv("KAGGLE_USERNAME")
+    key = os.getenv("KAGGLE_KEY")
+    if not username or not key:
+        raise EnvironmentError(
+            "KAGGLE_USERNAME dan KAGGLE_KEY mesti diset dalam .env.\n"
+            "Setup: https://www.kaggle.com/settings → API → Create New Token"
+        )
+    os.environ["KAGGLE_USERNAME"] = username
+    os.environ["KAGGLE_KEY"] = key
+    log.info(f"Kaggle credentials validated — user: {username}")
+
+
+def download_competition_dataset(dest_dir: str = "data") -> str:
+    """
+    WHAT : Download Home Credit competition dataset dari Kaggle
+    WHY  : Competition format — guna kaggle competitions download
+           BUKAN kaggle datasets download (akan fail dengan 403)
+    WHEN : Run sekali, skip kalau files dah ada
+    Returns: path to data directory
+    """
+    import kaggle
+
+    competition = os.getenv("KAGGLE_COMPETITION", "home-credit-default-risk")
+    dest_path = Path(dest_dir)
+    dest_path.mkdir(parents=True, exist_ok=True)
+
+    # WHAT: Check kalau primary file dah ada — skip download
+    primary_path = dest_path / PRIMARY_FILE
+    if primary_path.exists():
+        log.info(f"Dataset dah ada: {primary_path} — skip download")
+        return str(dest_path)
+
+    log.info(f"Downloading competition: {competition} → {dest_path}")
+    log.info("⚠️  File besar — bureau_balance.csv = 27M rows. Ambil masa.")
+
+    # WHAT: Download competition files
+    # WHY : Competition API download dan auto-extract
+    kaggle.api.competition_download_files(
+        competition,
+        path=str(dest_path),
+        quiet=False
+    )
+
+    # WHAT: Unzip kalau perlu
+    zip_path = dest_path / f"{competition}.zip"
+    if zip_path.exists():
+        log.info(f"Unzipping {zip_path}...")
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            zf.extractall(dest_path)
+        zip_path.unlink()
+        log.info("Unzip complete")
+
+    # WHAT: Verify semua 7 files ada
+    missing = [f for f in ALL_FILES if not (dest_path / f).exists()]
+    if missing:
+        log.warning(f"Files missing selepas download: {missing}")
+    else:
+        log.info(f"✅ Semua {len(ALL_FILES)} files verified")
+
+    return str(dest_path)
+
+
+def sample_dev_data(data_dir: str, rows: int = 1000) -> str:
+    """
+    WHAT : Sample N rows dari application_train untuk dev
+    WHY  : 307k rows terlalu besar untuk dev — sample jimat memory dan DPU
+    WHEN : Dev environment SAHAJA
+    Returns: path to sampled CSV
+    """
+    import pandas as pd
+
+    source = Path(data_dir) / PRIMARY_FILE
+    sample_path = Path(data_dir) / f"application_train_dev_{rows}rows.csv"
+
+    if sample_path.exists():
+        log.info(f"Dev sample dah ada: {sample_path} — skip")
+        return str(sample_path)
+
+    log.info(f"Sampling {rows} rows dari {source}...")
+    df = pd.read_csv(source, nrows=rows)
+    df.to_csv(sample_path, index=False)
+    log.info(f"Dev sample saved: {sample_path} ({len(df)} rows)")
+    return str(sample_path)
+
+
+def upload_all_to_s3(data_dir: str, env: str) -> dict:
+    """
+    WHAT : Upload semua 7 CSV ke S3 landing zone
+    WHY  : S3 = single source of truth untuk staging/prod pipeline
+    WHEN : Staging + prod environment
+    Returns: dict of {filename: s3_path}
+    """
+    import boto3
+
+    bucket = os.getenv(f"S3_BUCKET_{env.upper()}")
+    region = os.getenv("AWS_REGION", "ap-southeast-1")
+
+    if not bucket:
+        raise EnvironmentError(f"S3_BUCKET_{env.upper()} tidak diset")
+
+    s3 = boto3.client("s3", region_name=region)
+    uploaded = {}
+
+    for filename in ALL_FILES:
+        local_path = Path(data_dir) / filename
+        if not local_path.exists():
+            log.warning(f"File tak jumpa — skip: {filename}")
+            continue
+
+        s3_key = f"landing/{filename}"
+        s3_path = f"s3://{bucket}/{s3_key}"
+
+        # WHAT: Skip kalau dah ada dengan size sama — jimat S3 PUT cost
+        try:
+            resp = s3.head_object(Bucket=bucket, Key=s3_key)
+            if resp["ContentLength"] == local_path.stat().st_size:
+                log.info(f"Skip (same size): {s3_path}")
+                uploaded[filename] = s3_path
+                continue
+        except Exception:
+            pass
+
+        size_mb = local_path.stat().st_size / (1024 * 1024)
+        log.info(f"Uploading {filename} ({size_mb:.1f} MB) → {s3_path}")
+        s3.upload_file(str(local_path), bucket, s3_key)
+        uploaded[filename] = s3_path
+        log.info(f"✅ {filename} uploaded")
+
+    return uploaded
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Download Home Credit competition dataset dari Kaggle"
+    )
+    parser.add_argument("--env", default="dev", choices=["dev", "staging", "prod"])
+    parser.add_argument("--rows", type=int, default=None)
+    args = parser.parse_args()
+
+    log.info(f"=== Dataset Acquisition — env: {args.env} ===")
+
+    load_env(args.env)
+    validate_kaggle_credentials()
+
+    data_dir = download_competition_dataset(dest_dir="data")
+
+    if args.env == "dev":
+        dev_rows = args.rows or int(os.getenv("DEV_SAMPLE_ROWS", "1000"))
+        sample_path = sample_dev_data(data_dir, rows=dev_rows)
+        log.info(f"=== Done — dev dataset: {sample_path} ===")
+        log.info(f"Set DATASET_SOURCE_PATH={sample_path} dalam .env.dev")
+    else:
+        uploaded = upload_all_to_s3(data_dir, env=args.env)
+        log.info(f"=== Done — {len(uploaded)} files uploaded ke S3 ===")
+        for fname, path in uploaded.items():
+            log.info(f"  {fname} → {path}")
+        log.info(f"Set DATASET_SOURCE_PATH=s3://[bucket]/landing/ dalam .env.{args.env}")
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="bronze/generate_dev_data.py">
+"""
+Generate synthetic dev data for Phase 4a local testing.
+Matches exact schema of all 7 Home Credit CSV files.
+Use when Kaggle download unavailable (e.g., token expired / rules not accepted).
+
+Output: data/application_train_dev_1000rows.csv + supporting files
+"""
+
+import random
+import hashlib
+import pandas as pd
+import numpy as np
+from pathlib import Path
+
+random.seed(42)
+np.random.seed(42)
+
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+
+N_APP = 1000
+N_BUREAU = 1500
+N_BB = 3000
+N_PREV = 800
+N_INSTALL = 2000
+N_POS = 1500
+N_CC = 600
+
+SK_ID_CURR = list(range(100001, 100001 + N_APP))
+SK_ID_BUREAU = list(range(200001, 200001 + N_BUREAU))
+SK_ID_PREV = list(range(300001, 300001 + max(N_PREV, N_INSTALL, N_POS, N_CC)))
+
+
+def _nullify(series, rate=0.1):
+    mask = np.random.random(len(series)) < rate
+    return series.where(~mask, other=None)
+
+
+def make_application_train():
+    contract_types = ["Cash loans", "Revolving loans"]
+    income_types = ["Working", "Commercial associate", "Pensioner", "State servant", "Unemployed"]
+    education_types = ["Secondary / secondary special", "Higher education", "Incomplete higher", "Lower secondary"]
+    family_statuses = ["Married", "Single / not married", "Civil marriage", "Separated", "Widow"]
+    housing_types = ["House / apartment", "Rented apartment", "With parents", "Municipal apartment"]
+    org_types = ["Business Entity Type 3", "School", "Government", "Trade: type 7", "Medicine", "XNA"]
+    occupation_types = ["Laborers", "Core staff", "Accountants", "Managers", "Drivers", None]
+
+    days_employed = [random.choice([-random.randint(1, 5000), 365243]) for _ in range(N_APP)]
+
+    df = pd.DataFrame({
+        "SK_ID_CURR": SK_ID_CURR,
+        "TARGET": np.random.choice([0, 1], N_APP, p=[0.92, 0.08]),
+        "NAME_CONTRACT_TYPE": np.random.choice(contract_types, N_APP),
+        "AMT_CREDIT": np.random.uniform(50000, 2000000, N_APP).round(2),
+        "AMT_ANNUITY": np.random.uniform(5000, 100000, N_APP).round(2),
+        "AMT_INCOME_TOTAL": np.random.uniform(50000, 500000, N_APP).round(2),
+        "AMT_GOODS_PRICE": np.random.uniform(40000, 1800000, N_APP).round(2),
+        "NAME_INCOME_TYPE": np.random.choice(income_types, N_APP),
+        "NAME_EDUCATION_TYPE": np.random.choice(education_types, N_APP),
+        "NAME_FAMILY_STATUS": np.random.choice(family_statuses, N_APP),
+        "NAME_HOUSING_TYPE": np.random.choice(housing_types, N_APP),
+        "DAYS_BIRTH": np.random.randint(-25000, -6000, N_APP),
+        "DAYS_EMPLOYED": days_employed,
+        "FLAG_OWN_CAR": np.random.choice(["Y", "N"], N_APP),
+        "FLAG_OWN_REALTY": np.random.choice(["Y", "N"], N_APP),
+        "CNT_CHILDREN": np.random.randint(0, 5, N_APP),
+        "OCCUPATION_TYPE": [random.choice(occupation_types) for _ in range(N_APP)],
+        "ORGANIZATION_TYPE": np.random.choice(org_types, N_APP),
+        "REGION_RATING_CLIENT": np.random.choice([1, 2, 3], N_APP),
+        "EXT_SOURCE_1": _nullify(pd.Series(np.random.uniform(0, 1, N_APP).round(6)), 0.3),
+        "EXT_SOURCE_2": np.random.uniform(0, 1, N_APP).round(6),
+        "EXT_SOURCE_3": _nullify(pd.Series(np.random.uniform(0, 1, N_APP).round(6)), 0.2),
+    })
+    return df
+
+
+def make_bureau():
+    credit_types = ["Consumer credit", "Credit card", "Car loan", "Mortgage", "Microloan"]
+    credit_active = ["Active", "Closed", "Bad debt", "Sold"]
+    df = pd.DataFrame({
+        "SK_ID_CURR": np.random.choice(SK_ID_CURR, N_BUREAU),
+        "SK_ID_BUREAU": SK_ID_BUREAU,
+        "CREDIT_ACTIVE": np.random.choice(credit_active, N_BUREAU, p=[0.5, 0.4, 0.05, 0.05]),
+        "CREDIT_CURRENCY": "currency 1",
+        "DAYS_CREDIT": np.random.randint(-3000, 0, N_BUREAU),
+        "CREDIT_DAY_OVERDUE": np.random.choice([0, 0, 0, 5, 30, 90], N_BUREAU),
+        "DAYS_CREDIT_ENDDATE": _nullify(pd.Series(np.random.randint(-1000, 2000, N_BUREAU).astype(float)), 0.1),
+        "DAYS_CREDIT_UPDATE": np.random.randint(-500, 0, N_BUREAU),
+        "AMT_CREDIT_SUM": _nullify(pd.Series(np.random.uniform(10000, 1000000, N_BUREAU).round(2)), 0.05),
+        "AMT_CREDIT_SUM_DEBT": _nullify(pd.Series(np.random.uniform(0, 500000, N_BUREAU).round(2)), 0.1),
+        "AMT_CREDIT_SUM_LIMIT": _nullify(pd.Series(np.random.uniform(10000, 1000000, N_BUREAU).round(2)), 0.3),
+        "AMT_CREDIT_SUM_OVERDUE": np.zeros(N_BUREAU),
+        "CREDIT_TYPE": np.random.choice(credit_types, N_BUREAU),
+        "CNT_CREDIT_PROLONG": np.random.choice([0, 1, 2], N_BUREAU, p=[0.85, 0.12, 0.03]),
+    })
+    return df
+
+
+def make_bureau_balance():
+    bb_rows = []
+    statuses = ["C", "0", "1", "2", "3", "4", "5", "X"]
+    for sk_id_bureau in SK_ID_BUREAU:
+        months = random.randint(3, 12)
+        for m in range(months):
+            bb_rows.append({
+                "SK_ID_BUREAU": sk_id_bureau,
+                "MONTHS_BALANCE": -m,
+                "STATUS": random.choice(statuses),
+            })
+    return pd.DataFrame(bb_rows)
+
+
+def make_previous_application():
+    contract_types = ["Cash loans", "Revolving loans", "Consumer loans"]
+    statuses = ["Approved", "Refused", "Canceled", "Unused offer"]
+    product_types = ["walk-in", "XNA", "x-sell"]
+    df = pd.DataFrame({
+        "SK_ID_PREV": SK_ID_PREV[:N_PREV],
+        "SK_ID_CURR": np.random.choice(SK_ID_CURR, N_PREV),
+        "NAME_CONTRACT_TYPE": np.random.choice(contract_types, N_PREV),
+        "AMT_CREDIT": _nullify(pd.Series(np.random.uniform(10000, 1000000, N_PREV).round(2)), 0.05),
+        "AMT_APPLICATION": np.random.uniform(10000, 1000000, N_PREV).round(2),
+        "NAME_CONTRACT_STATUS": np.random.choice(statuses, N_PREV),
+        "DAYS_DECISION": np.random.randint(-3000, 0, N_PREV),
+        "NAME_PRODUCT_TYPE": np.random.choice(product_types, N_PREV),
+    })
+    return df
+
+
+def make_installments():
+    rows = []
+    for sk_id_prev in SK_ID_PREV[:N_PREV]:
+        sk_id_curr = random.choice(SK_ID_CURR)
+        n_inst = random.randint(3, 24)
+        for i in range(1, n_inst + 1):
+            amt = round(random.uniform(1000, 50000), 2)
+            days_inst = -random.randint(1, 2000)
+            days_pay = days_inst + random.randint(-10, 30)
+            rows.append({
+                "SK_ID_PREV": sk_id_prev,
+                "SK_ID_CURR": sk_id_curr,
+                "NUM_INSTALMENT_VERSION": 1.0,
+                "NUM_INSTALMENT_NUMBER": float(i),
+                "DAYS_INSTALMENT": float(days_inst),
+                "DAYS_ENTRY_PAYMENT": float(days_pay) if random.random() > 0.05 else None,
+                "AMT_INSTALMENT": amt,
+                "AMT_PAYMENT": amt if random.random() > 0.1 else None,
+            })
+    return pd.DataFrame(rows)
+
+
+def make_pos_cash():
+    rows = []
+    statuses = ["Active", "Completed", "Returned to the store", "Demand", "Amortized debt"]
+    for sk_id_prev in SK_ID_PREV[:N_PREV]:
+        sk_id_curr = random.choice(SK_ID_CURR)
+        months = random.randint(3, 12)
+        cnt = random.randint(12, 60)
+        for m in range(months):
+            rows.append({
+                "SK_ID_PREV": sk_id_prev,
+                "SK_ID_CURR": sk_id_curr,
+                "MONTHS_BALANCE": -m,
+                "CNT_INSTALMENT": float(cnt),
+                "CNT_INSTALMENT_FUTURE": float(max(0, cnt - m)),
+                "NAME_CONTRACT_STATUS": random.choice(statuses),
+                "SK_DPD": random.choice([0, 0, 0, 5, 30]),
+                "SK_DPD_DEF": 0,
+            })
+    return pd.DataFrame(rows)
+
+
+def make_credit_card():
+    rows = []
+    statuses = ["Active", "Completed", "Demand", "Signed"]
+    for sk_id_prev in SK_ID_PREV[:N_CC]:
+        sk_id_curr = random.choice(SK_ID_CURR)
+        months = random.randint(2, 8)
+        limit = round(random.uniform(10000, 200000), 2)
+        for m in range(months):
+            balance = round(random.uniform(0, limit), 2)
+            rows.append({
+                "SK_ID_PREV": sk_id_prev,
+                "SK_ID_CURR": sk_id_curr,
+                "MONTHS_BALANCE": -m,
+                "AMT_BALANCE": balance,
+                "AMT_CREDIT_LIMIT_ACTUAL": limit,
+                "AMT_DRAWINGS_CURRENT": round(random.uniform(0, 5000), 2),
+                "AMT_PAYMENT_CURRENT": round(random.uniform(0, 10000), 2),
+                "SK_DPD": random.choice([0, 0, 0, 5]),
+                "NAME_CONTRACT_STATUS": random.choice(statuses),
+            })
+    return pd.DataFrame(rows)
+
+
+def main():
+    print("Generating synthetic dev data...")
+
+    app = make_application_train()
+    app.to_csv(DATA_DIR / "application_train_dev_1000rows.csv", index=False)
+    app.to_csv(DATA_DIR / "application_train.csv", index=False)
+    print(f"  application_train: {len(app)} rows")
+
+    bureau = make_bureau()
+    bureau.to_csv(DATA_DIR / "bureau.csv", index=False)
+    print(f"  bureau: {len(bureau)} rows")
+
+    bb = make_bureau_balance()
+    bb.to_csv(DATA_DIR / "bureau_balance.csv", index=False)
+    print(f"  bureau_balance: {len(bb)} rows")
+
+    prev = make_previous_application()
+    prev.to_csv(DATA_DIR / "previous_application.csv", index=False)
+    print(f"  previous_application: {len(prev)} rows")
+
+    inst = make_installments()
+    inst.to_csv(DATA_DIR / "installments_payments.csv", index=False)
+    print(f"  installments_payments: {len(inst)} rows")
+
+    pos = make_pos_cash()
+    pos.to_csv(DATA_DIR / "POS_CASH_balance.csv", index=False)
+    print(f"  POS_CASH_balance: {len(pos)} rows")
+
+    cc = make_credit_card()
+    cc.to_csv(DATA_DIR / "credit_card_balance.csv", index=False)
+    print(f"  credit_card_balance: {len(cc)} rows")
+
+    print("Done — synthetic dev data ready in data/")
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="bronze/ingest_bronze.py">
+"""
+Bronze ingestion — parameterised by --table and --env.
+
+Dev  : reads local CSV → writes local parquet (data/bronze/{table}/)
+Cloud: reads S3 landing → writes Delta on S3 (s3://{bucket}/bronze/{table}/)
+
+PK nulls → quarantine path. Pipeline continues with clean rows.
+"""
+
+import os
+import argparse
+import hashlib
+import logging
+from datetime import date, datetime
+from pathlib import Path
+
+import pandas as pd
+from dotenv import load_dotenv
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger(__name__)
+
+ALL_TABLES = [
+    "application_train",
+    "bureau",
+    "bureau_balance",
+    "previous_application",
+    "installments_payments",
+    "POS_CASH_balance",
+    "credit_card_balance",
+]
+
+PK_MAP = {
+    "application_train": "SK_ID_CURR",
+    "bureau": "SK_ID_BUREAU",
+    "bureau_balance": "SK_ID_BUREAU",
+    "previous_application": "SK_ID_PREV",
+    "installments_payments": "SK_ID_PREV",
+    "POS_CASH_balance": "SK_ID_PREV",
+    "credit_card_balance": "SK_ID_PREV",
+}
+
+S3_SOURCE_FILENAME = {
+    "application_train": "application_train.csv",
+    "bureau": "bureau.csv",
+    "bureau_balance": "bureau_balance.csv",
+    "previous_application": "previous_application.csv",
+    "installments_payments": "installments_payments.csv",
+    "POS_CASH_balance": "POS_CASH_balance.csv",
+    "credit_card_balance": "credit_card_balance.csv",
+}
+
+
+def load_env(env: str):
+    env_file = f".env.{env}"
+    if Path(env_file).exists():
+        load_dotenv(env_file)
+    log.info(f"env={env}")
+
+
+def ingest_dev(table: str, ingestion_date: str) -> dict:
+    """Read local dev sample CSV, add metadata cols, write local parquet."""
+    if table == "application_train":
+        source = Path("data") / "application_train_dev_1000rows.csv"
+        if not source.exists():
+            source = Path("data") / "application_train.csv"
+    else:
+        source = Path("data") / S3_SOURCE_FILENAME[table]
+
+    if not source.exists():
+        log.warning(f"Dev source not found: {source} — skipping {table}")
+        return {"table": table, "rows_written": 0, "quarantine_rows": 0}
+
+    df = pd.read_csv(source, low_memory=False)
+    df["ingestion_ts"] = datetime.now(tz=None).isoformat()
+    df["ingestion_date"] = ingestion_date
+
+    pk = PK_MAP[table]
+    quarantine = df[df[pk].isna()]
+    clean = df[df[pk].notna()]
+
+    out_dir = Path("data") / "bronze" / table / f"ingestion_date={ingestion_date}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    clean.to_parquet(out_dir / "part-000.parquet", index=False)
+
+    if not quarantine.empty:
+        q_dir = Path("data") / "quarantine" / "bronze" / table / f"ingestion_date={ingestion_date}"
+        q_dir.mkdir(parents=True, exist_ok=True)
+        quarantine.to_parquet(q_dir / "quarantine.parquet", index=False)
+        log.warning(f"Quarantined {len(quarantine)} rows from {table} (NULL {pk})")
+
+    log.info(f"[DEV] {table}: {len(clean)} rows → {out_dir}")
+    return {"table": table, "rows_written": len(clean), "quarantine_rows": len(quarantine)}
+
+
+def ingest_cloud(table: str, ingestion_date: str, env: str) -> dict:
+    """Read S3 CSV → write Delta to S3. Requires delta-spark + pyspark."""
+    import boto3
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
+    from delta import configure_spark_with_delta_pip
+
+    bucket = os.environ[f"S3_BUCKET_{env.upper()}"]
+    region = os.getenv("AWS_REGION", "ap-southeast-1")
+    filename = S3_SOURCE_FILENAME[table]
+    s3_source = f"s3://{bucket}/landing/{filename}"
+    s3_target = f"s3://{bucket}/bronze/{table}/ingestion_date={ingestion_date}/"
+    s3_quarantine = f"s3://{bucket}/quarantine/bronze/{table}/ingestion_date={ingestion_date}/"
+    pk = PK_MAP[table]
+
+    builder = (
+        SparkSession.builder.appName(f"bronze_ingest_{table}")
+        .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+    )
+    spark = configure_spark_with_delta_pip(builder).getOrCreate()
+
+    df = spark.read.option("header", "true").option("inferSchema", "true").csv(s3_source)
+    df = df.withColumn("ingestion_ts", F.current_timestamp()).withColumn("ingestion_date", F.lit(ingestion_date))
+
+    quarantine = df.filter(F.col(pk).isNull())
+    clean = df.filter(F.col(pk).isNotNull())
+
+    q_count = quarantine.count()
+    if q_count > 0:
+        quarantine.write.mode("overwrite").parquet(s3_quarantine)
+        log.warning(f"Quarantined {q_count} rows (NULL {pk})")
+
+    clean.write.format("delta").mode("overwrite").save(s3_target)
+    w_count = clean.count()
+    log.info(f"[{env.upper()}] {table}: {w_count} rows → {s3_target}")
+    return {"table": table, "rows_written": w_count, "quarantine_rows": q_count}
+
+
+def run(table: str, env: str, ingestion_date: str = None) -> dict:
+    ingestion_date = ingestion_date or date.today().isoformat()
+    load_env(env)
+    if env == "dev":
+        return ingest_dev(table, ingestion_date)
+    else:
+        return ingest_cloud(table, ingestion_date, env)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--table", required=True, choices=ALL_TABLES)
+    parser.add_argument("--env", default="dev", choices=["dev", "staging", "prod"])
+    parser.add_argument("--date", dest="ingestion_date", default=None,
+                        help="ingestion_date override (YYYY-MM-DD)")
+    args = parser.parse_args()
+
+    result = run(args.table, args.env, args.ingestion_date)
+    log.info(f"Done: {result}")
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="dbt_home_credit/macros/generate_surrogate_key.sql">
+{% macro generate_surrogate_key(field_list) %}
+    md5(
+        {%- for field in field_list -%}
+            coalesce(cast({{ field }} as varchar), '')
+            {%- if not loop.last %} || '|' || {% endif -%}
+        {%- endfor -%}
+    )
+{% endmacro %}
+</file>
+
+<file path="dbt_home_credit/models/intermediate/int_applicant_attributes.sql">
+-- Select tracked SCD2 columns + PII masked columns from stg_application.
+-- This is the snapshot source — only columns that snap_applicant tracks.
+
+SELECT
+    sk_id_curr          AS applicant_id,
+    name_income_type,
+    name_education_type,
+    name_family_status,
+    cnt_children,
+    days_birth_masked,
+    days_employed_masked,
+    ingestion_date
+FROM {{ ref('stg_application') }}
+</file>
+
+<file path="dbt_home_credit/models/intermediate/int_bureau_with_balance.sql">
+-- Join silver_bureau + silver_bureau_balance.
+-- 1 row per sk_id_bureau with bureau_balance_status (STATUS at MONTHS_BALANCE=0).
+
+SELECT
+    b.sk_id_curr,
+    b.sk_id_bureau,
+    b.credit_active,
+    b.credit_currency,
+    b.days_credit,
+    b.credit_day_overdue,
+    b.days_credit_enddate,
+    b.days_credit_update,
+    b.amt_credit_sum,
+    b.amt_credit_sum_debt,
+    b.amt_credit_sum_limit,
+    b.amt_credit_sum_overdue,
+    b.credit_type,
+    b.cnt_credit_prolong,
+    bb.status AS bureau_balance_status,
+    b.ingestion_date
+FROM {{ ref('stg_bureau') }} b
+LEFT JOIN {{ ref('stg_bureau_balance') }} bb
+    ON b.sk_id_bureau = bb.sk_id_bureau
+</file>
+
+<file path="dbt_home_credit/models/intermediate/int_installment_payments.sql">
+-- Add derived column days_payment_diff.
+-- Positive = paid late, negative = paid early.
+
+SELECT
+    sk_id_prev,
+    sk_id_curr,
+    num_instalment_version,
+    num_instalment_number,
+    days_instalment,
+    days_entry_payment,
+    amt_instalment,
+    amt_payment,
+    days_entry_payment - days_instalment AS days_payment_diff,
+    ingestion_date
+FROM {{ ref('stg_installments') }}
+</file>
+
+<file path="dbt_home_credit/models/intermediate/schema.yml">
+version: 2
+
+models:
+  - name: int_applicant_attributes
+    description: "SCD2 snapshot source — tracked cols + PII masked. 1 row per applicant."
+    columns:
+      - name: applicant_id
+        tests:
+          - not_null
+          - unique
+
+  - name: int_bureau_with_balance
+    description: "bureau LEFT JOIN bureau_balance on sk_id_bureau."
+    columns:
+      - name: sk_id_bureau
+        tests:
+          - not_null
+          - unique
+
+  - name: int_installment_payments
+    description: "Installments with days_payment_diff derived column."
+    columns:
+      - name: sk_id_prev
+        tests:
+          - not_null
+</file>
+
+<file path="dbt_home_credit/models/mart/dim_applicant.sql">
+-- SCD Type 2 dimension — aliases snap_applicant dbt columns to resume-aligned names.
+-- start_date, end_date, is_current prove SCD2 implementation in portfolio.
+
+SELECT
+    {{ generate_surrogate_key(['applicant_id', 'dbt_valid_from']) }} AS applicant_sk,
+    applicant_id,
+    name_income_type,
+    name_education_type,
+    name_family_status,
+    cnt_children,
+    days_birth_masked,
+    days_employed_masked,
+    dbt_valid_from::DATE                                        AS start_date,
+    dbt_valid_to::DATE                                          AS end_date,
+    CASE WHEN dbt_valid_to IS NULL THEN TRUE ELSE FALSE END     AS is_current
+FROM {{ ref('snap_applicant') }}
+</file>
+
+<file path="dbt_home_credit/models/mart/dim_credit_status.sql">
+-- SCD Type 1 — static mapping for CREDIT_ACTIVE values from silver_bureau.
+-- 4 known status codes: Active, Closed, Bad debt, Sold.
+
+{{
+  config(materialized='table')
+}}
+
+SELECT
+    {{ generate_surrogate_key(['status_code']) }}   AS status_id,
+    status_code,
+    status_description,
+    current_timestamp()                             AS dbt_updated_at
+FROM (
+    VALUES
+        ('Active',   'Active bureau credit line'),
+        ('Closed',   'Closed bureau credit line'),
+        ('Bad debt', 'Bureau credit in bad debt status'),
+        ('Sold',     'Bureau credit sold to third party')
+) AS t(status_code, status_description)
+</file>
+
+<file path="dbt_home_credit/models/mart/dim_loan_type.sql">
+-- SCD Type 1 — static lookup from distinct contract types in silver_application.
+-- Expected 2 rows: 'Cash loans', 'Revolving loans'.
+
+{{
+  config(materialized='table')
+}}
+
+SELECT DISTINCT
+    {{ generate_surrogate_key(['name_contract_type']) }}    AS loan_type_id,
+    name_contract_type                                      AS loan_type_name,
+    current_timestamp()                                     AS dbt_updated_at
+FROM {{ ref('stg_application') }}
+WHERE name_contract_type IS NOT NULL
+</file>
+
+<file path="dbt_home_credit/models/mart/fact_bureau_credit.sql">
+-- Grain: 1 row = 1 bureau credit record (SK_ID_BUREAU).
+-- KPI-03 source: credit_day_overdue.
+
+SELECT
+    {{ generate_surrogate_key(['sk_id_bureau']) }}   AS bureau_credit_sk,
+    d.applicant_sk,
+    b.sk_id_curr,
+    b.sk_id_bureau,
+    cs.status_id                                     AS credit_status_id,
+    b.credit_day_overdue,
+    b.amt_credit_sum,
+    b.amt_credit_sum_debt,
+    b.credit_type,
+    b.bureau_balance_status,
+    b.ingestion_date
+FROM {{ ref('int_bureau_with_balance') }} b
+LEFT JOIN {{ ref('dim_applicant') }} d
+    ON b.sk_id_curr = d.applicant_id AND d.is_current = TRUE
+LEFT JOIN {{ ref('dim_credit_status') }} cs
+    ON b.credit_active = cs.status_code
+</file>
+
+<file path="dbt_home_credit/models/mart/fact_installment_payment.sql">
+-- Grain: 1 row = 1 installment payment (SK_ID_PREV + NUM_INSTALMENT_NUMBER).
+-- days_payment_diff from int_installment_payments: positive = late, negative = early.
+
+SELECT
+    {{ generate_surrogate_key(['sk_id_prev', 'num_instalment_number']) }}   AS payment_sk,
+    sk_id_curr,
+    sk_id_prev,
+    num_instalment_number,
+    days_instalment,
+    days_entry_payment,
+    amt_instalment,
+    amt_payment,
+    days_payment_diff,
+    ingestion_date
+FROM {{ ref('int_installment_payments') }}
+</file>
+
+<file path="dbt_home_credit/models/mart/fact_loan_application.sql">
+-- Grain: 1 row = 1 loan application (SK_ID_CURR).
+-- KPI-04: income_to_credit_ratio = AMT_INCOME_TOTAL / NULLIF(AMT_CREDIT, 0)
+
+SELECT
+    {{ generate_surrogate_key(['sk_id_curr']) }}     AS loan_application_sk,
+    d.applicant_sk,
+    lt.loan_type_id,
+    a.sk_id_curr,
+    a.target_flag,
+    a.amt_credit,
+    a.amt_annuity,
+    a.amt_income_total,
+    a.amt_income_total / NULLIF(a.amt_credit, 0)    AS income_to_credit_ratio,
+    a.ingestion_date
+FROM {{ ref('stg_application') }} a
+LEFT JOIN {{ ref('dim_applicant') }} d
+    ON a.sk_id_curr = d.applicant_id AND d.is_current = TRUE
+LEFT JOIN {{ ref('dim_loan_type') }} lt
+    ON a.name_contract_type = lt.loan_type_name
+</file>
+
+<file path="dbt_home_credit/models/mart/schema.yml">
+version: 2
+
+models:
+  - name: fact_loan_application
+    description: "Grain: 1 row per loan application (sk_id_curr). Central fact table."
+    columns:
+      - name: loan_application_sk
+        tests:
+          - not_null
+          - unique
+      - name: sk_id_curr
+        tests:
+          - not_null
+      - name: applicant_sk
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_applicant')
+              field: applicant_sk
+      - name: loan_type_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_loan_type')
+              field: loan_type_id
+      - name: target_flag
+        tests:
+          - accepted_values:
+              values: [0, 1]
+              severity: warn
+      - name: amt_credit
+        tests:
+          - not_null
+
+  - name: fact_bureau_credit
+    description: "Grain: 1 row per bureau credit record (sk_id_bureau)."
+    columns:
+      - name: bureau_credit_sk
+        tests:
+          - not_null
+          - unique
+      - name: sk_id_bureau
+        tests:
+          - not_null
+      - name: applicant_sk
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_applicant')
+              field: applicant_sk
+      - name: credit_status_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_credit_status')
+              field: status_id
+
+  - name: fact_installment_payment
+    description: "Grain: 1 row per installment payment (sk_id_prev + num_instalment_number)."
+    columns:
+      - name: payment_sk
+        tests:
+          - not_null
+          - unique
+      - name: sk_id_curr
+        tests:
+          - not_null
+
+  - name: dim_applicant
+    description: "SCD Type 2 applicant dimension. start_date/end_date/is_current via dbt snapshot."
+    columns:
+      - name: applicant_sk
+        tests:
+          - not_null
+          - unique
+      - name: applicant_id
+        tests:
+          - not_null
+      - name: start_date
+        tests:
+          - not_null
+      - name: is_current
+        tests:
+          - not_null
+      - name: days_birth_masked
+        tests:
+          - not_null
+
+  - name: dim_loan_type
+    description: "SCD Type 1 — loan contract types (Cash loans, Revolving loans)."
+    columns:
+      - name: loan_type_id
+        tests:
+          - not_null
+          - unique
+      - name: loan_type_name
+        tests:
+          - not_null
+          - unique
+
+  - name: dim_credit_status
+    description: "SCD Type 1 — bureau credit active status codes."
+    columns:
+      - name: status_id
+        tests:
+          - not_null
+          - unique
+      - name: status_code
+        tests:
+          - not_null
+          - unique
+          - accepted_values:
+              values: ['Active', 'Closed', 'Bad debt', 'Sold']
+</file>
+
+<file path="dbt_home_credit/models/staging/schema.yml">
+version: 2
+
+models:
+  - name: stg_application
+    description: "Cast + renamed silver_application. No business logic."
+    columns:
+      - name: sk_id_curr
+        tests:
+          - not_null
+          - unique
+      - name: days_birth_masked
+        tests:
+          - not_null
+      - name: amt_credit
+        tests:
+          - not_null
+      - name: target_flag
+        tests:
+          - accepted_values:
+              values: [0, 1]
+              severity: warn
+
+  - name: stg_bureau
+    description: "Cast + renamed silver_bureau."
+    columns:
+      - name: sk_id_bureau
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_bureau_balance
+    description: "Cast + renamed silver_bureau_balance. 1 row per sk_id_bureau."
+    columns:
+      - name: sk_id_bureau
+        tests:
+          - not_null
+          - unique
+
+  - name: stg_installments
+    description: "Cast + renamed silver_installments."
+    columns:
+      - name: sk_id_prev
+        tests:
+          - not_null
+</file>
+
+<file path="dbt_home_credit/models/staging/stg_application.sql">
+-- Source: silver_application (Snowflake Silver schema)
+-- Cast types, rename to snake_case, no business logic.
+
+SELECT
+    SK_ID_CURR::INTEGER             AS sk_id_curr,
+    TARGET::INTEGER                 AS target_flag,
+    NAME_CONTRACT_TYPE::VARCHAR     AS name_contract_type,
+    AMT_CREDIT::FLOAT               AS amt_credit,
+    AMT_ANNUITY::FLOAT              AS amt_annuity,
+    AMT_INCOME_TOTAL::FLOAT         AS amt_income_total,
+    AMT_GOODS_PRICE::FLOAT          AS amt_goods_price,
+    NAME_INCOME_TYPE::VARCHAR       AS name_income_type,
+    NAME_EDUCATION_TYPE::VARCHAR    AS name_education_type,
+    NAME_FAMILY_STATUS::VARCHAR     AS name_family_status,
+    NAME_HOUSING_TYPE::VARCHAR      AS name_housing_type,
+    CNT_CHILDREN::INTEGER           AS cnt_children,
+    FLAG_OWN_CAR::VARCHAR           AS flag_own_car,
+    FLAG_OWN_REALTY::VARCHAR        AS flag_own_realty,
+    OCCUPATION_TYPE::VARCHAR        AS occupation_type,
+    ORGANIZATION_TYPE::VARCHAR      AS organization_type,
+    REGION_RATING_CLIENT::INTEGER   AS region_rating_client,
+    EXT_SOURCE_1::FLOAT             AS ext_source_1,
+    EXT_SOURCE_2::FLOAT             AS ext_source_2,
+    EXT_SOURCE_3::FLOAT             AS ext_source_3,
+    DAYS_BIRTH_MASKED::VARCHAR      AS days_birth_masked,
+    DAYS_EMPLOYED_MASKED::VARCHAR   AS days_employed_masked,
+    ingestion_date::DATE            AS ingestion_date
+FROM {{ source('silver', 'silver_application') }}
+WHERE SK_ID_CURR IS NOT NULL
+</file>
+
+<file path="dbt_home_credit/models/staging/stg_bureau_balance.sql">
+-- Source: silver_bureau_balance (1 row per SK_ID_BUREAU — MONTHS_BALANCE=0)
+
+SELECT
+    SK_ID_BUREAU::INTEGER   AS sk_id_bureau,
+    STATUS::VARCHAR         AS status,
+    ingestion_date::DATE    AS ingestion_date
+FROM {{ source('silver', 'silver_bureau_balance') }}
+WHERE SK_ID_BUREAU IS NOT NULL
+</file>
+
+<file path="dbt_home_credit/models/staging/stg_bureau.sql">
+-- Source: silver_bureau
+
+SELECT
+    SK_ID_CURR::INTEGER         AS sk_id_curr,
+    SK_ID_BUREAU::INTEGER       AS sk_id_bureau,
+    CREDIT_ACTIVE::VARCHAR      AS credit_active,
+    CREDIT_CURRENCY::VARCHAR    AS credit_currency,
+    DAYS_CREDIT::INTEGER        AS days_credit,
+    CREDIT_DAY_OVERDUE::INTEGER AS credit_day_overdue,
+    DAYS_CREDIT_ENDDATE::FLOAT  AS days_credit_enddate,
+    DAYS_CREDIT_UPDATE::INTEGER AS days_credit_update,
+    AMT_CREDIT_SUM::FLOAT       AS amt_credit_sum,
+    AMT_CREDIT_SUM_DEBT::FLOAT  AS amt_credit_sum_debt,
+    AMT_CREDIT_SUM_LIMIT::FLOAT AS amt_credit_sum_limit,
+    AMT_CREDIT_SUM_OVERDUE::FLOAT AS amt_credit_sum_overdue,
+    CREDIT_TYPE::VARCHAR        AS credit_type,
+    CNT_CREDIT_PROLONG::INTEGER AS cnt_credit_prolong,
+    ingestion_date::DATE        AS ingestion_date
+FROM {{ source('silver', 'silver_bureau') }}
+WHERE SK_ID_BUREAU IS NOT NULL
+</file>
+
+<file path="dbt_home_credit/models/staging/stg_installments.sql">
+-- Source: silver_installments
+
+SELECT
+    SK_ID_PREV::INTEGER                 AS sk_id_prev,
+    SK_ID_CURR::INTEGER                 AS sk_id_curr,
+    NUM_INSTALMENT_VERSION::FLOAT       AS num_instalment_version,
+    NUM_INSTALMENT_NUMBER::FLOAT        AS num_instalment_number,
+    DAYS_INSTALMENT::FLOAT              AS days_instalment,
+    DAYS_ENTRY_PAYMENT::FLOAT           AS days_entry_payment,
+    AMT_INSTALMENT::FLOAT               AS amt_instalment,
+    AMT_PAYMENT::FLOAT                  AS amt_payment,
+    ingestion_date::DATE                AS ingestion_date
+FROM {{ source('silver', 'silver_installments') }}
+WHERE SK_ID_PREV IS NOT NULL
+</file>
+
+<file path="dbt_home_credit/snapshots/snap_applicant.sql">
+{% snapshot snap_applicant %}
+  {{
+    config(
+      target_schema='home_credit_gold',
+      unique_key='applicant_id',
+      strategy='check',
+      check_cols=['name_income_type', 'name_education_type', 'name_family_status', 'cnt_children'],
+      invalidate_hard_deletes=false
+    )
+  }}
+
+  SELECT
+    applicant_id,
+    name_income_type,
+    name_education_type,
+    name_family_status,
+    cnt_children,
+    days_birth_masked,
+    days_employed_masked
+  FROM {{ ref('int_applicant_attributes') }}
+
+{% endsnapshot %}
+</file>
+
+<file path="dbt_home_credit/tests/assert_fk_bureau_credit_applicant.sql">
+-- FK integrity: every fact_bureau_credit.applicant_sk must resolve in dim_applicant.
+
+SELECT f.sk_id_bureau, f.applicant_sk
+FROM {{ ref('fact_bureau_credit') }} f
+LEFT JOIN {{ ref('dim_applicant') }} d ON f.applicant_sk = d.applicant_sk
+WHERE d.applicant_sk IS NULL
+  AND f.applicant_sk IS NOT NULL
+</file>
+
+<file path="dbt_home_credit/tests/assert_fk_loan_application_applicant.sql">
+-- FK integrity: every fact_loan_application.applicant_sk must resolve in dim_applicant.
+-- Returns rows that are orphaned (no matching applicant_sk in dim_applicant).
+
+SELECT f.sk_id_curr, f.applicant_sk
+FROM {{ ref('fact_loan_application') }} f
+LEFT JOIN {{ ref('dim_applicant') }} d ON f.applicant_sk = d.applicant_sk
+WHERE d.applicant_sk IS NULL
+  AND f.applicant_sk IS NOT NULL
+</file>
+
+<file path="dbt_home_credit/tests/assert_scd2_one_current_per_applicant.sql">
+-- SCD2 invariant: exactly 1 is_current=TRUE per applicant_id.
+-- Fails if any applicant_id has 0 or 2+ current records.
+
+SELECT applicant_id, COUNT(*) AS current_count
+FROM {{ ref('dim_applicant') }}
+WHERE is_current = TRUE
+GROUP BY applicant_id
+HAVING COUNT(*) != 1
+</file>
+
+<file path="dbt_home_credit/dbt_project.yml">
+name: 'home_credit_risk'
+version: '1.0.0'
+config-version: 2
+
+profile: 'home-credit-risk-pipeline'
+
+model-paths: ["models"]
+snapshot-paths: ["snapshots"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+seed-paths: ["seeds"]
+analysis-paths: ["analyses"]
+docs-paths: ["docs"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  home_credit_risk:
+    staging:
+      +schema: "{{ env_var('SNOWFLAKE_SCHEMA_DEV', 'DEV') }}"
+      +materialized: view
+    intermediate:
+      +schema: "{{ env_var('SNOWFLAKE_SCHEMA_DEV', 'DEV') }}"
+      +materialized: view
+    mart:
+      +schema: home_credit_gold
+      +materialized: table
+
+snapshots:
+  home_credit_risk:
+    +target_schema: home_credit_gold
+</file>
+
+<file path="dbt_home_credit/profiles.yml">
+home-credit-risk-pipeline:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'SYSADMIN') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      schema: "{{ env_var('SNOWFLAKE_SCHEMA_DEV', 'DEV') }}"
+      threads: 4
+    staging:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'SYSADMIN') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      schema: "{{ env_var('SNOWFLAKE_SCHEMA_STAGING', 'STAGING') }}"
+      threads: 4
+    prod:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'SYSADMIN') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      schema: home_credit_gold
+      threads: 4
+</file>
+
+<file path="dbt_home_credit/sources.yml">
+version: 2
+
+sources:
+  - name: silver
+    database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+    schema: "{{ env_var('SNOWFLAKE_SCHEMA_DEV', 'DEV') }}"
+    description: "Silver layer — cleaned and masked data loaded from AWS Glue transforms"
+    tables:
+      - name: silver_application
+        description: "Cleaned application_train — PII masked, XNA nulled, 365243 nulled"
+        columns:
+          - name: SK_ID_CURR
+            tests:
+              - not_null
+              - unique
+          - name: DAYS_BIRTH_MASKED
+            tests:
+              - not_null
+          - name: ORGANIZATION_TYPE
+            tests:
+              - not_in:
+                  values: ['XNA']
+      - name: silver_bureau
+        description: "Bureau credit records — deduped on SK_ID_BUREAU"
+        columns:
+          - name: SK_ID_BUREAU
+            tests:
+              - not_null
+              - unique
+      - name: silver_bureau_balance
+        description: "Bureau balance — 1 row per SK_ID_BUREAU (MONTHS_BALANCE=0)"
+        columns:
+          - name: SK_ID_BUREAU
+            tests:
+              - not_null
+              - unique
+      - name: silver_installments
+        description: "Installment payments — deduped on (SK_ID_PREV, NUM_INSTALMENT_NUMBER)"
+        columns:
+          - name: SK_ID_PREV
+            tests:
+              - not_null
+</file>
+
+<file path="docs/ADR/ADR-001-kimball-star-schema.md">
+# ADR-001: Data Modelling Paradigm — Kimball Star Schema
+
+Status: Accepted
+Date  : 2026-05-12
+Owner : Data Architect + Data Platform Engineer
+
+## Context
+Home Credit dataset: 7 CSV files, 300k+ applicants, analytics use case.
+
+## Decision
+Paradigm: Kimball — Star Schema
+
+## Consequences
+(+) Standard analytics pattern — joins manageable dalam AWS Glue
+(+) Snowflake query cost predictable
+(+) SCD Type 2 directly proves resume bullet point
+(-) More joins vs OBT
+(-) bureau_balance (27M rows) needs careful partitioning
+
+## Alternatives Rejected
+OBT: rejected — bureau_balance 27M rows + installments 13M rows
+     nested Array/Struct = memory risk + Snowflake cost unpredictable
+</file>
+
+<file path="docs/ARCHITECTURE.md">
+# Architecture: Home Credit Risk Pipeline
+> Status: DRAFT — Pending Phase 3 sign-off
+
+## Stack
+| Layer | Tool | Notes |
+|-------|------|-------|
+| Storage | AWS S3 | Landing + Bronze + Silver |
+| Bronze | Delta Lake on S3 | ACID, time travel |
+| Silver | AWS Glue (Spark) | SHA-256 masking, transforms |
+| Gold | dbt Core + Snowflake | Kimball Star Schema |
+| Orchestration | Airflow standalone | localhost:8080 |
+| Quality | Great Expectations | Per layer |
+| BI | Power BI | Gold consumer |
+| Analytics | Databricks Serverless SQL | Query layer only |
+
+## CRITICAL Constraint
+Databricks = Serverless SQL ONLY. No PySpark. No Classic Compute.
+Silver transforms = AWS Glue (Spark) SAHAJA.
+
+## Data Flow
+application_train.csv (307k)  ─┐
+bureau.csv (1.7M)              ├─→ S3 Landing → Bronze (Delta)
+bureau_balance.csv (27M)       ├─→ AWS Glue Silver → SHA-256 mask
+installments_payments.csv      ├─→ dbt Gold → Snowflake → Power BI
+POS_CASH_balance.csv           ├─→
+credit_card_balance.csv        ─┘
+</file>
+
+<file path="docs/BRD.md">
+# BRD: Home Credit Risk Pipeline
+> Document  : Business Requirements Document v1.0
+> Phase     : 1 — BRD
+> Status    : SIGNED OFF
+> Owner     : BA (Business Analyst)
+> Signed by : BA ✅ | PO ✅ | PM ✅ | DQS ✅
+> Date      : 2026-05-12
+
+---
+
+## 1. Business Context
+
+Home Credit serves unbanked and underbanked populations who lack traditional credit histories.
+The organisation relies on alternative data (bureau records, payment histories, previous applications)
+to assess creditworthiness. Without a structured data pipeline, risk analysts cannot efficiently
+segment applicants, track portfolio health, or audit PII handling for compliance.
+
+**Business Problem:**
+Build a scalable, auditable data pipeline that ingests 7 source tables (300k+ loan application
+records), applies data quality gating and PII masking, and surfaces credit risk KPIs in a
+governed Gold layer — enabling the Risk Team to identify default-risk segments and the
+Compliance Team to demonstrate GDPR-aligned data handling.
+
+**Resume Entry Being Proven:**
+> "Engineered a scalable ingestion pipeline integrating 300k+ credit records from 7 disparate
+> source tables with full schema alignment, automated data quality gating via Great Expectations,
+> PII masking (SHA-256), and SCD Type 2 historical tracking for compliance."
+
+---
+
+## 2. Stakeholders
+
+| # | Stakeholder       | Role              | Primary Data Need                                       | Priority |
+|---|-------------------|-------------------|---------------------------------------------------------|----------|
+| 1 | Risk Team         | Primary consumer  | Default rate by segment (loan type, income, employment) | High     |
+| 2 | Compliance        | Audit & oversight | PII masking evidence + SCD Type 2 audit trail           | High     |
+| 3 | Portfolio Mgmt    | Secondary consumer| Loan portfolio health KPIs, credit amount distribution  | Medium   |
+| 4 | Data Engineering  | Pipeline owner    | Schema alignment, data quality checks, pipeline uptime  | High     |
+
+---
+
+## 3. Business Requirements — MoSCoW Priority
+
+### Must Have (blocking downstream, Phase 1 scope)
+
+| # | Requirement | Business Value | Success Metric |
+|---|-------------|---------------|----------------|
+| BR-01 | Ingest all 7 source CSV tables from Kaggle to Bronze layer | Baseline for all analytics | Row count match: Bronze = source ± 0 |
+| BR-02 | Apply PII masking (SHA-256) on quasi-identifiers (DAYS_BIRTH, DAYS_EMPLOYED) before Silver layer | GDPR alignment, no raw PII in analytics | GX check: masked ≠ original values |
+| BR-03 | Implement SCD Type 2 for dim_applicant (start_date, end_date, is_current) | Compliance audit trail for applicant history | is_current=True count = unique SK_ID_CURR |
+| BR-04 | Calculate Default Rate KPI in Gold layer (fact_loan_application) | Core risk metric for Risk Team | Formula verified vs manual SQL count |
+| BR-05 | Great Expectations validation suite at Bronze, Silver, Gold layers | Data quality gating — no bad data downstream | GX HTML report generated per layer |
+| BR-06 | Quarantine bad rows — do not block pipeline for non-critical failures | Pipeline resilience | Quarantine table populated for HIGH/MEDIUM severity |
+
+### Should Have (important, not blocking Phase 1 sign-off)
+
+| # | Requirement | Business Value |
+|---|-------------|---------------|
+| BR-07 | Bureau delinquency rate KPI (integration of bureau.csv) | Enriched risk view per applicant |
+| BR-08 | Airflow DAG orchestration with Slack pass/fail alerts | Operational visibility |
+| BR-09 | Income-to-Credit Ratio metric per segment | Risk signal beyond default flag |
+
+### Could Have (Phase 2 backlog)
+
+| # | Requirement |
+|---|-------------|
+| BR-10 | Previous application count per applicant (fact_bureau_credit enrichment) |
+| BR-11 | Credit card balance trend analysis (credit_card_balance.csv integration) |
+| BR-12 | POS cash balance delinquency trend |
+
+### Won't Have (out of scope — explicitly excluded)
+
+| Exclusion | Reason |
+|-----------|--------|
+| ML prediction model | Bukan data engineering scope. Resume entry is pipeline, not ML. |
+| Real-time streaming / Kafka | Source data is static CSV — CDC simulation via upsert, not streaming |
+| Power BI dashboard development | Consumer layer — pipeline ends at Gold/Snowflake |
+| New tool suggestions outside resume stack | Stack boundary is hard limit per playbook |
+
+---
+
+## 4. KPIs — Explicit Formulas (BA enforced)
+
+| # | KPI | Explicit Formula | Grain | Frequency | Source Table |
+|---|-----|-----------------|-------|-----------|-------------|
+| KPI-01 | Default Rate | `COUNT(SK_ID_CURR WHERE TARGET=1) / COUNT(SK_ID_CURR) * 100` | Overall + per loan type | Daily | fact_loan_application |
+| KPI-02 | Avg Credit Amount by Loan Type | `AVG(AMT_CREDIT) GROUP BY NAME_CONTRACT_TYPE` | Per loan type | Daily | fact_loan_application |
+| KPI-03 | Bureau Delinquency Rate | `COUNT(SK_ID_BUREAU WHERE CREDIT_DAY_OVERDUE > 0) / COUNT(SK_ID_BUREAU) * 100` | Overall | Daily | fact_bureau_credit |
+| KPI-04 | Income-to-Credit Ratio | `AVG(AMT_INCOME_TOTAL / NULLIF(AMT_CREDIT, 0))` | Per segment | Daily | fact_loan_application + dim_applicant |
+| KPI-05 | Avg Days Employed (masked proxy) | `AVG(DAYS_EMPLOYED_MASKED_HASH)` — note: value is hashed, metric is existence/presence | Per income bracket | Weekly | dim_applicant |
+
+> **BA Rule enforced:** KPI-05 note — DAYS_EMPLOYED is SHA-256 masked. Numeric computation not
+> possible post-masking. KPI-05 is scoped to presence validation only, not numeric aggregation.
+> PO accepted this limitation. DQS to validate masking in Silver GX suite.
+
+---
+
+## 5. Data Sources Overview
+
+| # | File | Rows (approx) | Description | Pipeline Layer |
+|---|------|---------------|-------------|---------------|
+| 1 | application_train.csv | 307,511 | Primary loan applications — TARGET variable | Bronze → Silver → Gold (fact_loan_application, dim_applicant) |
+| 2 | bureau.csv | 1,716,428 | Bureau credit records per applicant | Bronze → Silver → Gold (fact_bureau_credit) |
+| 3 | bureau_balance.csv | 27,299,925 | Monthly bureau balance statuses | Bronze → Silver (supporting bureau aggregation) |
+| 4 | previous_application.csv | 1,670,214 | Previous loan applications at Home Credit | Bronze → Silver (Should Have — Phase 2 Gold) |
+| 5 | installments_payments.csv | 13,605,401 | Installment payment records | Bronze → Silver → Gold (fact_installment_payment) |
+| 6 | POS_CASH_balance.csv | 10,001,358 | POS and cash loan balance history | Bronze (Could Have integration) |
+| 7 | credit_card_balance.csv | 3,840,312 | Credit card balance history | Bronze (Could Have integration) |
+
+> **DQS Note:** bureau_balance.csv at 27M rows is the largest file. AWS Glue DPU usage must
+> be monitored. Dev uses 1000 rows from application_train only — bureau_balance deferred to staging.
+
+---
+
+## 6. Business Rules
+
+| # | Rule | Owner | Enforced At |
+|---|------|-------|-------------|
+| BR-RULE-01 | TARGET column: 0 = repaid, 1 = defaulted. NULL TARGET rows = quarantine. | DQS | Silver GX |
+| BR-RULE-02 | SK_ID_CURR must be unique in application_train (1 application per row) | DQS | Bronze GX |
+| BR-RULE-03 | bureau.SK_ID_CURR must exist in application_train (referential integrity) | DQS | Silver GX |
+| BR-RULE-04 | AMT_CREDIT > 0 always. Zero or negative = quarantine. | DQS | Silver GX |
+| BR-RULE-05 | DAYS_BIRTH and DAYS_EMPLOYED masked via SHA-256 before Silver write | DE | Glue Silver job |
+| BR-RULE-06 | SCD Type 2: only one is_current=True record per SK_ID_CURR in dim_applicant | AE | dbt Gold |
+
+---
+
+## 7. Out of Scope
+
+- Real-time data ingestion (source is static CSV, no CDC available)
+- ML model development or scoring pipeline
+- Power BI dashboard build (Compliance and Risk Teams build their own views)
+- New tools not in resume stack (Docker, MLflow not in this project's stack boundary)
+- bureau_balance.csv Gold integration (deferred — 27M rows, DPU risk)
+
+---
+
+## 8. Sign-off Gate — Phase 1
+
+### Agent Reviews
+
+**BA — Business Analyst:**
+BRD requirement BR-05 checked — KPI formulas are explicit with NULLIF guard (KPI-04).
+KPI-05 has been flagged and scoped down — cannot aggregate hashed values numerically.
+All requirements have clear business justification. Scope out of ML is correct.
+`BA ✅ APPROVED — BRD v1.0 meets business requirements standard.`
+
+**PO — Product Owner:**
+Must Have (BR-01 to BR-06) are correctly blocked as Phase 1 critical.
+Should Have (BR-07 to BR-09) correctly deferred — not blocking Bronze/Silver build.
+Could Have (BR-10 to BR-12) correctly Phase 2 backlog.
+ML, streaming, Power BI dev — Won't Have confirmed.
+bureau_balance.csv Gold integration deferred — correct call given DPU risk.
+`PO ✅ APPROVED — Scope is clean. Priorities are realistic for Codespace constraint.`
+
+**DQS — Data Quality Steward:**
+Data quality requirements are explicit (BR-05, BR-06, BR-RULE-01 to BR-RULE-06).
+GX suite per layer confirmed in BR-05. Quarantine strategy in BR-06.
+KPI-05 masking limitation flagged and accepted. SHA-256 validation scope clear.
+DQS Note on bureau_balance.csv row count acknowledged.
+`DQS ✅ APPROVED — Data quality scope adequate for Phase 1. Will define GX expectations in Phase 2 DRD.`
+
+**PM — Project Manager:**
+All 4 sign-offs received. No blockers remain.
+Next phase: Phase 2 — DRD (agents: BA, DA, SDE, DPE, DQS).
+Hard blockers for Phase 2 → Phase 3 gate are clear in CLAUDE.md.
+`PM ✅ APPROVED — Phase 1 BRD complete. Proceeding to Phase 2.`
+
+---
+
+=== SIGN OFF: BRD v1.0 ===
+BA  ✅ — BRD v1.0 approved. KPI formulas explicit. Scope correct.
+PO  ✅ — Priorities clean. Won't Have list enforced.
+DQS ✅ — DQ requirements adequate. GX scope clear.
+PM  ✅ — No blockers. Gate passed.
+Status : APPROVED
+Action : Proceed to Phase 2 — DRD
+</file>
+
+<file path="docs/DATA_DICTIONARY.md">
+# Data Dictionary: Home Credit Risk Pipeline
+> Owner: DQS
+
+## Key Business Terms
+| Term | Definition |
+|------|-----------|
+| Default | TARGET=1 — applicant gagal bayar loan |
+| SK_ID_CURR | Unique applicant ID across all tables |
+| AMT_CREDIT | Total credit amount applied |
+| DAYS_BIRTH | Days since birth (negative integer) |
+| DAYS_EMPLOYED | Days since employment start (365243 = anomaly) |
+
+## PII / Quasi-Identifiers (SHA-256 masked dalam Silver)
+| Column | Risk | Mask Method |
+|--------|------|-------------|
+| DAYS_BIRTH | Age proxy | SHA-256 |
+| DAYS_EMPLOYED | Employment proxy | SHA-256 |
+</file>
+
+<file path="docs/DATA_MODEL.md">
+# Data Model: Home Credit Risk Pipeline
+> Status: DRAFT — Pending Phase 3 sign-off
+> Paradigm: Kimball — Star Schema (LOCKED dari Claude.ai session)
+
+## Paradigm Decision
+Chosen  : Kimball — Star Schema
+Reason  : Analytics aggregation, AWS Glue manageable joins,
+          Snowflake cost predictable, resume entry alignment
+
+## Why Not OBT
+OBT rejected — bureau_balance 27M rows + installments 13M rows
+nested Arrays = memory risk. Kimball Star Schema = safer untuk free tier.
+
+## Fact Tables
+### fact_loan_application
+- Grain   : 1 row = 1 loan application (SK_ID_CURR) — LOCKED
+- Source  : application_train.csv
+- Pattern : Snapshot → MERGE upsert
+
+### fact_installment_payment
+- Grain   : 1 row = 1 installment payment record — LOCKED
+- Source  : installments_payments.csv
+- Pattern : Append + dedup
+
+### fact_bureau_credit
+- Grain   : 1 row = 1 bureau credit record per applicant — LOCKED
+- Source  : bureau.csv
+- Pattern : Snapshot → MERGE
+
+## Dimension Tables
+### dim_applicant — SCD TYPE 2 — LOCKED (resume proof)
+- Columns : applicant_id, income, employment, start_date, end_date, is_current
+- Source  : application_train.csv
+
+### dim_loan_type — SCD TYPE 1
+- Columns : loan_type_id, loan_type_name
+- Source  : NAME_CONTRACT_TYPE dari application_train
+
+### dim_credit_status — SCD TYPE 1
+- Columns : status_id, status_code, status_description
+- Source  : Credit bureau status codes
+
+## Sign-off Gate
+| Agent | Status |
+|-------|--------|
+| DA | PENDING |
+| DPE | PENDING |
+| SDE | PENDING |
+| AE | PENDING |
+| PM | PENDING |
+</file>
+
+<file path="docs/DQD.md">
+# DQD: Home Credit Risk Pipeline
+> Status: DRAFT — Pending Phase 5 sign-off
+
+## Bronze Suite
+| Check | Rule | Severity |
+|-------|------|----------|
+| application_train row count | = 307,511 (staging) | CRITICAL |
+| ingestion_ts | NOT NULL | CRITICAL |
+| SK_ID_CURR | NOT NULL | CRITICAL |
+
+## Silver Suite
+| Check | Rule | Severity |
+|-------|------|----------|
+| DAYS_BIRTH masked | != original value | CRITICAL |
+| DAYS_EMPLOYED masked | != original value | CRITICAL |
+| DAYS_EMPLOYED anomaly | 365243 → NULL | HIGH |
+| SK_ID_CURR | UNIQUE per table | HIGH |
+
+## Gold Suite (dbt tests)
+| Check | Rule | Severity |
+|-------|------|----------|
+| fact_loan_application.SK_ID_CURR | NOT NULL, UNIQUE | CRITICAL |
+| dim_applicant.is_current | Only 1 True per applicant | CRITICAL |
+| FK: fact → dim_applicant | Referential integrity | CRITICAL |
+</file>
+
+<file path="docs/DRD.md">
+# DRD: Home Credit Risk Pipeline
+> Status: DRAFT — Pending Phase 2 sign-off
+
+## Source Tables (7 files)
+| File | Rows (approx) | Primary Key | Notes |
+|------|--------------|-------------|-------|
+| application_train.csv | 307,511 | SK_ID_CURR | Primary fact source |
+| bureau.csv | 1,716,428 | SK_ID_BUREAU | Credit bureau records |
+| bureau_balance.csv | 27,299,925 | SK_ID_BUREAU | Monthly bureau status |
+| previous_application.csv | 1,670,214 | SK_ID_PREV | Past loan applications |
+| installments_payments.csv | 13,605,401 | SK_ID_PREV | Payment history |
+| POS_CASH_balance.csv | 10,001,358 | SK_ID_PREV | POS loan balance |
+| credit_card_balance.csv | 3,840,312 | SK_ID_PREV | Credit card balance |
+
+## Known Data Issues
+| Issue | Table | Strategy |
+|-------|-------|----------|
+| XNA values | application_train (ORGANIZATION_TYPE) | Treat as NULL |
+| 365243 magic number | DAYS_EMPLOYED | Flag as anomaly, quarantine |
+| High cardinality | OCCUPATION_TYPE | NULL handling required |
+
+## Ingestion Pattern
+Static snapshot CSV — simulate CDC via MERGE upsert dalam Silver
+
+## Sign-off Gate
+| Agent | Status |
+|-------|--------|
+| BA | PENDING |
+| DA | PENDING |
+| SDE | PENDING |
+| DPE | PENDING |
+| DQS | PENDING |
+| PM | PENDING |
+</file>
+
+<file path="docs/OPS_RUNBOOK.md">
+# OPS Runbook: Home Credit Risk Pipeline
+> Status: DRAFT — Pending Phase 5 sign-off
+
+## Monitoring
+| Tool | Where |
+|------|-------|
+| Airflow | localhost:8080 |
+| AWS Glue | AWS Console → Glue → Jobs |
+| GX Report | docs/screenshots/gx_report.html |
+| Snowflake | Snowflake UI |
+
+## Scenarios
+
+### Bronze fail
+Check : S3 landing/ ada files?
+Fix   : Rerun download_dataset.py → Rerun bronze task
+
+### Glue Silver fail
+Check : AWS Glue → Jobs → Logs
+Fix 1 : Schema mismatch → update Silver job
+Fix 2 : DPU limit → optimize Glue job
+Rerun : Airflow → Clear silver_glue_transform → Trigger
+
+### dbt test fail
+Check : dbt test output
+Fix 1 : FK violation → check Silver quarantine
+Fix 2 : SCD is_current > 1 per applicant → check int_applicant_scd2.sql
+</file>
+
+<file path="docs/PIPELINE_SPEC.md">
+# Pipeline SPEC: Home Credit Risk Pipeline
+> Status: DRAFT — Pending Phase 3 sign-off
+
+## Bronze Layer
+Input  : 7 CSV files dari S3 landing/ (atau local dev)
+Output : bronze.{table} (Delta Lake, partitioned by ingestion_date)
+Logic  : Store as-is + ingestion_ts, source_file, batch_id, env
+
+## Silver Layer (AWS Glue Spark Job)
+Input  : bronze.{table}
+Output : silver.{table}
+
+Transforms:
+1. DEDUP       : Keep latest ingestion_ts per SK_ID_CURR
+2. TYPE CAST   : DAYS_BIRTH → Integer, AMT_CREDIT → Float
+3. NULL HANDLE : DAYS_EMPLOYED = 365243 → NULL + flag
+                 ORGANIZATION_TYPE = 'XNA' → NULL
+4. PII MASK    : SHA-256(DAYS_BIRTH), SHA-256(DAYS_EMPLOYED)
+5. SCD PREP    : Add is_current, start_date, end_date untuk dim_applicant
+
+## Gold Layer (dbt)
+staging__applications.sql       → clean + cast
+staging__bureau.sql             → clean + cast
+int_applicant_scd2.sql          → SCD Type 2 logic
+int_credit_risk_features.sql    → join fact tables
+mart_loan_application.sql       → fact_loan_application
+mart_applicant_dim.sql          → dim_applicant (SCD2)
+mart_credit_risk_summary.sql    → KPI aggregations
+
+## KPIs
+default_rate            = COUNT(TARGET=1) / COUNT(*)
+avg_credit_amount       = AVG(AMT_CREDIT) GROUP BY loan_type
+bureau_delinquency_rate = SUM(bad_bureau_records) / COUNT(bureau_records)
+</file>
+
+<file path="glue/glue_silver_application.py">
+"""
+AWS Glue 4.0 — Silver Application Transform
+G.1X × 2 workers | Python 3 | Glue version 4.0
+
+Source : s3://{bucket}/bronze/application_train/ingestion_date={date}/
+Target : s3://{bucket}/silver/silver_application/ingestion_date={date}/
+
+Transforms (PIPELINE_SPEC order):
+  1. Column subset (23 cols)
+  2. DI-001: ORGANIZATION_TYPE XNA → NULL
+  3. DI-002: DAYS_EMPLOYED 365243 → NULL
+  4. PII mask DAYS_EMPLOYED (SHA-256 after null substitution)
+  5. PII mask DAYS_BIRTH (SHA-256, always)
+  6. Drop raw PII columns
+  7. Dedup on SK_ID_CURR (max ingestion_ts)
+  8. Delta MERGE (UPSERT on SK_ID_CURR)
+"""
+
+import sys
+import hashlib
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql import functions as F
+from pyspark.sql.functions import udf
+from pyspark.sql.types import StringType
+from delta.tables import DeltaTable
+
+args = getResolvedOptions(sys.argv, ["JOB_NAME", "env", "date", "bucket"])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args["JOB_NAME"], args)
+
+ENV = args["env"]
+DATE = args["date"]
+BUCKET = args["bucket"]
+
+SOURCE = f"s3://{BUCKET}/bronze/application_train/ingestion_date={DATE}/"
+TARGET = f"s3://{BUCKET}/silver/silver_application/ingestion_date={DATE}/"
+
+KEEP_COLS = [
+    "SK_ID_CURR", "TARGET", "NAME_CONTRACT_TYPE", "AMT_CREDIT", "AMT_ANNUITY",
+    "AMT_INCOME_TOTAL", "AMT_GOODS_PRICE", "NAME_INCOME_TYPE", "NAME_EDUCATION_TYPE",
+    "NAME_FAMILY_STATUS", "NAME_HOUSING_TYPE", "DAYS_BIRTH", "DAYS_EMPLOYED",
+    "FLAG_OWN_CAR", "FLAG_OWN_REALTY", "CNT_CHILDREN", "OCCUPATION_TYPE",
+    "ORGANIZATION_TYPE", "REGION_RATING_CLIENT", "EXT_SOURCE_1", "EXT_SOURCE_2",
+    "EXT_SOURCE_3", "ingestion_ts", "ingestion_date",
+]
+
+
+@udf(returnType=StringType())
+def sha256_udf(value):
+    if value is None:
+        return None
+    return hashlib.sha256(str(value).encode()).hexdigest()
+
+
+df = spark.read.format("delta").load(SOURCE)
+
+# Step 1: Column subset
+existing = [c for c in KEEP_COLS if c in df.columns]
+df = df.select(existing)
+
+# Step 2: DI-001 XNA → NULL
+df = df.withColumn(
+    "ORGANIZATION_TYPE",
+    F.when(F.col("ORGANIZATION_TYPE") == "XNA", None).otherwise(F.col("ORGANIZATION_TYPE"))
+)
+
+# Step 3: DI-002 365243 → NULL
+df = df.withColumn(
+    "DAYS_EMPLOYED_CLEAN",
+    F.when(F.col("DAYS_EMPLOYED") == 365243, None).otherwise(F.col("DAYS_EMPLOYED"))
+)
+
+# Step 4: PII mask DAYS_EMPLOYED
+df = df.withColumn("DAYS_EMPLOYED_MASKED", sha256_udf(F.col("DAYS_EMPLOYED_CLEAN").cast("string")))
+
+# Step 5: PII mask DAYS_BIRTH
+df = df.withColumn("DAYS_BIRTH_MASKED", sha256_udf(F.col("DAYS_BIRTH").cast("string")))
+
+# Step 6: Drop raw PII
+df = df.drop("DAYS_BIRTH", "DAYS_EMPLOYED", "DAYS_EMPLOYED_CLEAN")
+
+# Step 7: Dedup — keep latest per SK_ID_CURR
+from pyspark.sql.window import Window
+w = Window.partitionBy("SK_ID_CURR").orderBy(F.col("ingestion_ts").desc())
+df = df.withColumn("_rank", F.row_number().over(w)).filter(F.col("_rank") == 1).drop("_rank")
+
+# Step 8: Delta MERGE (UPSERT)
+if DeltaTable.isDeltaTable(spark, TARGET):
+    dt = DeltaTable.forPath(spark, TARGET)
+    dt.alias("t").merge(
+        df.alias("s"),
+        "t.SK_ID_CURR = s.SK_ID_CURR"
+    ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+else:
+    df.write.format("delta").mode("overwrite").partitionBy("ingestion_date").save(TARGET)
+
+job.commit()
+</file>
+
+<file path="glue/glue_silver_balance_tables.py">
+"""
+AWS Glue 4.0 — Silver POS Cash + Credit Card Balance Transform
+G.1X × 2 workers
+
+Sources:
+  s3://{bucket}/bronze/POS_CASH_balance/ingestion_date={date}/
+  s3://{bucket}/bronze/credit_card_balance/ingestion_date={date}/
+
+Targets:
+  s3://{bucket}/silver/silver_pos_cash/ingestion_date={date}/
+  s3://{bucket}/silver/silver_credit_card/ingestion_date={date}/
+
+No natural dedup key → append mode with ingestion_date partition.
+Gold integration deferred (BR-11 credit_card, BR-12 POS_CASH).
+"""
+
+import sys
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql import functions as F
+
+args = getResolvedOptions(sys.argv, ["JOB_NAME", "env", "date", "bucket"])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args["JOB_NAME"], args)
+
+BUCKET = args["bucket"]
+DATE = args["date"]
+
+SRC_POS = f"s3://{BUCKET}/bronze/POS_CASH_balance/ingestion_date={DATE}/"
+SRC_CC = f"s3://{BUCKET}/bronze/credit_card_balance/ingestion_date={DATE}/"
+TGT_POS = f"s3://{BUCKET}/silver/silver_pos_cash/ingestion_date={DATE}/"
+TGT_CC = f"s3://{BUCKET}/silver/silver_credit_card/ingestion_date={DATE}/"
+
+POS_COLS = [
+    "SK_ID_PREV", "SK_ID_CURR", "MONTHS_BALANCE", "CNT_INSTALMENT",
+    "CNT_INSTALMENT_FUTURE", "NAME_CONTRACT_STATUS", "SK_DPD", "SK_DPD_DEF",
+    "ingestion_ts", "ingestion_date",
+]
+
+CC_COLS = [
+    "SK_ID_PREV", "SK_ID_CURR", "MONTHS_BALANCE", "AMT_BALANCE",
+    "AMT_CREDIT_LIMIT_ACTUAL", "AMT_DRAWINGS_CURRENT", "AMT_PAYMENT_CURRENT",
+    "SK_DPD", "NAME_CONTRACT_STATUS", "ingestion_ts", "ingestion_date",
+]
+
+# POS Cash
+df_pos = spark.read.format("delta").load(SRC_POS)
+existing_pos = [c for c in POS_COLS if c in df_pos.columns]
+df_pos = df_pos.select(existing_pos)
+df_pos.write.format("delta").mode("overwrite").partitionBy("ingestion_date").save(TGT_POS)
+
+# Credit Card
+df_cc = spark.read.format("delta").load(SRC_CC)
+existing_cc = [c for c in CC_COLS if c in df_cc.columns]
+df_cc = df_cc.select(existing_cc)
+df_cc.write.format("delta").mode("overwrite").partitionBy("ingestion_date").save(TGT_CC)
+
+job.commit()
+</file>
+
+<file path="glue/glue_silver_bureau.py">
+"""
+AWS Glue 4.0 — Silver Bureau + Bureau Balance Transform
+G.1X × 2 workers (fallback G.2X if OOM on bureau_balance 27M rows)
+
+Sources:
+  s3://{bucket}/bronze/bureau/ingestion_date={date}/
+  s3://{bucket}/bronze/bureau_balance/ingestion_date={date}/
+
+Targets:
+  s3://{bucket}/silver/silver_bureau/ingestion_date={date}/
+  s3://{bucket}/silver/silver_bureau_balance/ingestion_date={date}/
+
+Note: Depends on silver_application completing first (RI GX check).
+"""
+
+import sys
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from delta.tables import DeltaTable
+
+args = getResolvedOptions(sys.argv, ["JOB_NAME", "env", "date", "bucket"])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args["JOB_NAME"], args)
+
+BUCKET = args["bucket"]
+DATE = args["date"]
+
+SRC_BUREAU = f"s3://{BUCKET}/bronze/bureau/ingestion_date={DATE}/"
+SRC_BB = f"s3://{BUCKET}/bronze/bureau_balance/ingestion_date={DATE}/"
+TGT_BUREAU = f"s3://{BUCKET}/silver/silver_bureau/ingestion_date={DATE}/"
+TGT_BB = f"s3://{BUCKET}/silver/silver_bureau_balance/ingestion_date={DATE}/"
+
+BUREAU_COLS = [
+    "SK_ID_CURR", "SK_ID_BUREAU", "CREDIT_ACTIVE", "CREDIT_CURRENCY",
+    "DAYS_CREDIT", "CREDIT_DAY_OVERDUE", "DAYS_CREDIT_ENDDATE",
+    "DAYS_CREDIT_UPDATE", "AMT_CREDIT_SUM", "AMT_CREDIT_SUM_DEBT",
+    "AMT_CREDIT_SUM_LIMIT", "AMT_CREDIT_SUM_OVERDUE", "CREDIT_TYPE",
+    "CNT_CREDIT_PROLONG", "ingestion_ts", "ingestion_date",
+]
+
+# ── Bureau ────────────────────────────────────────────────────────────────────
+df_bureau = spark.read.format("delta").load(SRC_BUREAU)
+existing = [c for c in BUREAU_COLS if c in df_bureau.columns]
+df_bureau = df_bureau.select(existing)
+
+w = Window.partitionBy("SK_ID_BUREAU").orderBy(F.col("ingestion_ts").desc())
+df_bureau = (
+    df_bureau.withColumn("_rank", F.row_number().over(w))
+    .filter(F.col("_rank") == 1)
+    .drop("_rank")
+)
+
+if DeltaTable.isDeltaTable(spark, TGT_BUREAU):
+    dt = DeltaTable.forPath(spark, TGT_BUREAU)
+    dt.alias("t").merge(
+        df_bureau.alias("s"), "t.SK_ID_BUREAU = s.SK_ID_BUREAU"
+    ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+else:
+    df_bureau.write.format("delta").mode("overwrite").partitionBy("ingestion_date").save(TGT_BUREAU)
+
+# ── Bureau Balance ────────────────────────────────────────────────────────────
+# Filter MONTHS_BALANCE=0 → 1 row per SK_ID_BUREAU
+df_bb = spark.read.format("delta").load(SRC_BB)
+df_bb = df_bb.filter(F.col("MONTHS_BALANCE") == 0)
+df_bb = df_bb.select("SK_ID_BUREAU", "STATUS", "ingestion_ts", "ingestion_date")
+df_bb = (
+    df_bb.withColumn("_rank", F.row_number().over(
+        Window.partitionBy("SK_ID_BUREAU").orderBy(F.col("ingestion_ts").desc())
+    ))
+    .filter(F.col("_rank") == 1)
+    .drop("_rank")
+)
+
+if DeltaTable.isDeltaTable(spark, TGT_BB):
+    dt = DeltaTable.forPath(spark, TGT_BB)
+    dt.alias("t").merge(
+        df_bb.alias("s"), "t.SK_ID_BUREAU = s.SK_ID_BUREAU"
+    ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+else:
+    df_bb.write.format("delta").mode("overwrite").partitionBy("ingestion_date").save(TGT_BB)
+
+job.commit()
+</file>
+
+<file path="glue/glue_silver_installments.py">
+"""
+AWS Glue 4.0 — Silver Installments Payments Transform
+G.1X × 2 workers
+
+Source : s3://{bucket}/bronze/installments_payments/ingestion_date={date}/
+Target : s3://{bucket}/silver/silver_installments/ingestion_date={date}/
+
+No PII masking. Dedup on (SK_ID_PREV, NUM_INSTALMENT_NUMBER).
+"""
+
+import sys
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql import functions as F
+from pyspark.sql.window import Window
+from delta.tables import DeltaTable
+
+args = getResolvedOptions(sys.argv, ["JOB_NAME", "env", "date", "bucket"])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args["JOB_NAME"], args)
+
+BUCKET = args["bucket"]
+DATE = args["date"]
+SOURCE = f"s3://{BUCKET}/bronze/installments_payments/ingestion_date={DATE}/"
+TARGET = f"s3://{BUCKET}/silver/silver_installments/ingestion_date={DATE}/"
+
+KEEP_COLS = [
+    "SK_ID_PREV", "SK_ID_CURR", "NUM_INSTALMENT_VERSION", "NUM_INSTALMENT_NUMBER",
+    "DAYS_INSTALMENT", "DAYS_ENTRY_PAYMENT", "AMT_INSTALMENT", "AMT_PAYMENT",
+    "ingestion_ts", "ingestion_date",
+]
+
+df = spark.read.format("delta").load(SOURCE)
+existing = [c for c in KEEP_COLS if c in df.columns]
+df = df.select(existing)
+
+w = Window.partitionBy("SK_ID_PREV", "NUM_INSTALMENT_NUMBER").orderBy(F.col("ingestion_ts").desc())
+df = df.withColumn("_rank", F.row_number().over(w)).filter(F.col("_rank") == 1).drop("_rank")
+
+if DeltaTable.isDeltaTable(spark, TARGET):
+    dt = DeltaTable.forPath(spark, TARGET)
+    dt.alias("t").merge(
+        df.alias("s"),
+        "t.SK_ID_PREV = s.SK_ID_PREV AND t.NUM_INSTALMENT_NUMBER = s.NUM_INSTALMENT_NUMBER"
+    ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+else:
+    df.write.format("delta").mode("overwrite").partitionBy("ingestion_date").save(TARGET)
+
+job.commit()
+</file>
+
+<file path="glue/glue_silver_previous_application.py">
+"""
+AWS Glue 4.0 — Silver Previous Application Transform
+G.1X × 2 workers
+
+Source : s3://{bucket}/bronze/previous_application/ingestion_date={date}/
+Target : s3://{bucket}/silver/silver_previous_application/ingestion_date={date}/
+
+No PII masking. No dedup (SK_ID_PREV unique per row). 8 columns kept.
+Gold fact deferred (BR-10 Could Have).
+"""
+
+import sys
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql import functions as F
+from delta.tables import DeltaTable
+
+args = getResolvedOptions(sys.argv, ["JOB_NAME", "env", "date", "bucket"])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args["JOB_NAME"], args)
+
+BUCKET = args["bucket"]
+DATE = args["date"]
+SOURCE = f"s3://{BUCKET}/bronze/previous_application/ingestion_date={DATE}/"
+TARGET = f"s3://{BUCKET}/silver/silver_previous_application/ingestion_date={DATE}/"
+
+KEEP_COLS = [
+    "SK_ID_PREV", "SK_ID_CURR", "NAME_CONTRACT_TYPE", "AMT_CREDIT",
+    "AMT_APPLICATION", "NAME_CONTRACT_STATUS", "DAYS_DECISION",
+    "NAME_PRODUCT_TYPE", "ingestion_ts", "ingestion_date",
+]
+
+df = spark.read.format("delta").load(SOURCE)
+existing = [c for c in KEEP_COLS if c in df.columns]
+df = df.select(existing)
+
+if DeltaTable.isDeltaTable(spark, TARGET):
+    dt = DeltaTable.forPath(spark, TARGET)
+    dt.alias("t").merge(
+        df.alias("s"), "t.SK_ID_PREV = s.SK_ID_PREV"
+    ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+else:
+    df.write.format("delta").mode("overwrite").partitionBy("ingestion_date").save(TARGET)
+
+job.commit()
+</file>
+
+<file path="gold/profiles.yml">
+home-credit-risk-pipeline:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'SYSADMIN') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      schema: "{{ env_var('SNOWFLAKE_SCHEMA_DEV') }}"
+      threads: 4
+    staging:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'SYSADMIN') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      schema: "{{ env_var('SNOWFLAKE_SCHEMA_STAGING') }}"
+      threads: 4
+    prod:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'SYSADMIN') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      schema: "{{ env_var('SNOWFLAKE_SCHEMA_PROD') }}"
+      threads: 4
+</file>
+
+<file path="gx/great_expectations.yml">
+config_version: 3.0
+
+datasources:
+  local_pandas:
+    class_name: Datasource
+    execution_engine:
+      class_name: PandasExecutionEngine
+    data_connectors:
+      default_inferred_data_connector_name:
+        class_name: InferredAssetFilesystemDataConnector
+        base_directory: data/
+        default_regex:
+          pattern: (.*)
+          group_names:
+            - data_asset_name
+
+stores:
+  expectations_store:
+    class_name: ExpectationsStore
+    store_backend:
+      class_name: TupleFilesystemStoreBackend
+      base_directory: gx/expectations/
+
+  validations_store:
+    class_name: ValidationsStore
+    store_backend:
+      class_name: TupleFilesystemStoreBackend
+      base_directory: gx/validations/
+
+  evaluation_parameter_store:
+    class_name: EvaluationParameterStore
+
+expectations_store_name: expectations_store
+validations_store_name: validations_store
+evaluation_parameter_store_name: evaluation_parameter_store
+
+data_docs_sites:
+  local_site:
+    class_name: SiteBuilder
+    store_backend:
+      class_name: TupleFilesystemStoreBackend
+      base_directory: gx/data_docs/local_site/
+    site_index_builder:
+      class_name: DefaultSiteIndexBuilder
+
+anonymous_usage_statistics:
+  enabled: false
+</file>
+
+<file path="gx/run_bronze_suite.py">
+"""
+Run GX bronze_suite against Bronze parquet files (dev: local, cloud: S3).
+
+Gates (PIPELINE_SPEC Section 6):
+  - Row count > 0 per table (WARN — pipeline continues)
+  - PK column NOT NULL (quarantine already handled upstream, just log)
+
+On failure: log warning. Pipeline continues (quarantine path already written).
+"""
+
+import os
+import logging
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
+import great_expectations as gx
+from great_expectations.core.batch import RuntimeBatchRequest
+
+log = logging.getLogger(__name__)
+
+
+BRONZE_TABLES = {
+    "application_train": "SK_ID_CURR",
+    "bureau": "SK_ID_BUREAU",
+    "bureau_balance": "SK_ID_BUREAU",
+    "previous_application": "SK_ID_PREV",
+    "installments_payments": "SK_ID_PREV",
+    "POS_CASH_balance": "SK_ID_PREV",
+    "credit_card_balance": "SK_ID_PREV",
+}
+
+
+def _load_bronze_df(table: str, ingestion_date: str, env: str) -> pd.DataFrame | None:
+    if env == "dev":
+        path = Path("data") / "bronze" / table / f"ingestion_date={ingestion_date}" / "part-000.parquet"
+        if not path.exists():
+            log.warning(f"Bronze file not found: {path}")
+            return None
+        return pd.read_parquet(path)
+    else:
+        import awswrangler as wr
+        bucket = os.environ[f"S3_BUCKET_{env.upper()}"]
+        s3_path = f"s3://{bucket}/bronze/{table}/ingestion_date={ingestion_date}/"
+        return wr.s3.read_parquet(s3_path)
+
+
+def _validate_table(context, df: pd.DataFrame, table: str, pk_col: str) -> bool:
+    suite_name = f"bronze_{table}_suite"
+
+    try:
+        suite = context.get_expectation_suite(suite_name)
+    except Exception:
+        suite = context.add_expectation_suite(suite_name)
+
+    validator = context.get_validator(
+        batch_request=RuntimeBatchRequest(
+            datasource_name="local_pandas",
+            data_connector_name="default_runtime_data_connector_name",
+            data_asset_name=table,
+            runtime_parameters={"batch_data": df},
+            batch_identifiers={"default_identifier_name": "default"},
+        ),
+        expectation_suite=suite,
+    )
+
+    validator.expect_table_row_count_to_be_between(min_value=1)
+    validator.expect_column_values_to_not_be_null(pk_col)
+
+    results = validator.validate()
+    passed = results["success"]
+    if not passed:
+        log.warning(f"GX bronze_suite WARN for {table}: {results['statistics']}")
+    else:
+        log.info(f"GX bronze_suite PASS for {table}")
+    return passed
+
+
+def run(env: str = "dev", ingestion_date: str = None):
+    ingestion_date = ingestion_date or date.today().isoformat()
+    context = gx.get_context(context_root_dir="gx")
+
+    results = {}
+    for table, pk_col in BRONZE_TABLES.items():
+        df = _load_bronze_df(table, ingestion_date, env)
+        if df is None:
+            results[table] = "SKIPPED"
+            continue
+        passed = _validate_table(context, df, table, pk_col)
+        results[table] = "PASS" if passed else "WARN"
+
+    passed_count = sum(1 for v in results.values() if v == "PASS")
+    log.info(f"GX bronze_suite complete: {passed_count}/{len(BRONZE_TABLES)} PASS | {results}")
+    return results
+
+
+if __name__ == "__main__":
+    import sys
+    env = sys.argv[1] if len(sys.argv) > 1 else "dev"
+    run(env=env)
+</file>
+
+<file path="gx/run_silver_suite.py">
+"""
+Run GX silver_suite — validates Silver layer data quality gates.
+
+Gates (PIPELINE_SPEC Section 6 — all FAIL = DAG FAIL):
+  - silver_application: ORGANIZATION_TYPE not 'XNA'
+  - silver_application: DAYS_BIRTH_MASKED not null
+  - silver_application: AMT_CREDIT > 0
+  - silver_application: NULL rate OCCUPATION_TYPE < 40%
+  - silver_bureau: SK_ID_BUREAU unique (no duplicates)
+  - silver_bureau_balance: SK_ID_BUREAU unique (1 row per bureau record)
+
+On failure: raises RuntimeError → Airflow task FAIL → Slack alert.
+"""
+
+import os
+import logging
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
+import great_expectations as gx
+from great_expectations.core.batch import RuntimeBatchRequest
+
+log = logging.getLogger(__name__)
+
+
+def _load_silver_df(table: str, ingestion_date: str, env: str) -> pd.DataFrame | None:
+    if env == "dev":
+        path = Path("data") / "silver" / table / f"ingestion_date={ingestion_date}" / "part-000.parquet"
+        if not path.exists():
+            log.warning(f"Silver file not found: {path}")
+            return None
+        return pd.read_parquet(path)
+    else:
+        import awswrangler as wr
+        bucket = os.environ[f"S3_BUCKET_{env.upper()}"]
+        s3_path = f"s3://{bucket}/silver/{table}/ingestion_date={ingestion_date}/"
+        return wr.s3.read_parquet(s3_path)
+
+
+def _validate_application(context, df: pd.DataFrame) -> bool:
+    suite_name = "silver_application_suite"
+    try:
+        suite = context.get_expectation_suite(suite_name)
+    except Exception:
+        suite = context.add_expectation_suite(suite_name)
+
+    validator = context.get_validator(
+        batch_request=RuntimeBatchRequest(
+            datasource_name="local_pandas",
+            data_connector_name="default_runtime_data_connector_name",
+            data_asset_name="silver_application",
+            runtime_parameters={"batch_data": df},
+            batch_identifiers={"default_identifier_name": "default"},
+        ),
+        expectation_suite=suite,
+    )
+
+    # DI-001 enforced
+    validator.expect_column_values_to_not_be_in_set("ORGANIZATION_TYPE", ["XNA"])
+    # PII masking applied
+    validator.expect_column_values_to_not_be_null("DAYS_BIRTH_MASKED")
+    # Data quality
+    validator.expect_column_values_to_be_between("AMT_CREDIT", min_value=0, strict_min=True)
+    # OCCUPATION_TYPE NULL rate < 40%
+    null_pct = df["OCCUPATION_TYPE"].isna().mean() if "OCCUPATION_TYPE" in df.columns else 0
+    if null_pct >= 0.40:
+        log.warning(f"OCCUPATION_TYPE NULL rate {null_pct:.1%} exceeds 40% threshold")
+
+    results = validator.validate()
+    return results["success"]
+
+
+def _validate_bureau(context, df_bureau: pd.DataFrame, df_bb: pd.DataFrame) -> bool:
+    suite = context.add_expectation_suite("silver_bureau_suite") if not _suite_exists(context, "silver_bureau_suite") else context.get_expectation_suite("silver_bureau_suite")
+
+    v_bureau = context.get_validator(
+        batch_request=RuntimeBatchRequest(
+            datasource_name="local_pandas",
+            data_connector_name="default_runtime_data_connector_name",
+            data_asset_name="silver_bureau",
+            runtime_parameters={"batch_data": df_bureau},
+            batch_identifiers={"default_identifier_name": "default"},
+        ),
+        expectation_suite=suite,
+    )
+    v_bureau.expect_column_values_to_be_unique("SK_ID_BUREAU")
+    r1 = v_bureau.validate()
+
+    suite_bb = context.add_expectation_suite("silver_bureau_balance_suite") if not _suite_exists(context, "silver_bureau_balance_suite") else context.get_expectation_suite("silver_bureau_balance_suite")
+    v_bb = context.get_validator(
+        batch_request=RuntimeBatchRequest(
+            datasource_name="local_pandas",
+            data_connector_name="default_runtime_data_connector_name",
+            data_asset_name="silver_bureau_balance",
+            runtime_parameters={"batch_data": df_bb},
+            batch_identifiers={"default_identifier_name": "default"},
+        ),
+        expectation_suite=suite_bb,
+    )
+    v_bb.expect_column_values_to_be_unique("SK_ID_BUREAU")
+    r2 = v_bb.validate()
+
+    return r1["success"] and r2["success"]
+
+
+def _suite_exists(context, name: str) -> bool:
+    try:
+        context.get_expectation_suite(name)
+        return True
+    except Exception:
+        return False
+
+
+def run(env: str = "dev", ingestion_date: str = None):
+    ingestion_date = ingestion_date or date.today().isoformat()
+    context = gx.get_context(context_root_dir="gx")
+
+    failures = []
+
+    df_app = _load_silver_df("silver_application", ingestion_date, env)
+    if df_app is not None:
+        if not _validate_application(context, df_app):
+            failures.append("silver_application")
+            log.error("GX silver_suite FAIL: silver_application")
+        else:
+            log.info("GX silver_suite PASS: silver_application")
+
+    df_bureau = _load_silver_df("silver_bureau", ingestion_date, env)
+    df_bb = _load_silver_df("silver_bureau_balance", ingestion_date, env)
+    if df_bureau is not None and df_bb is not None:
+        if not _validate_bureau(context, df_bureau, df_bb):
+            failures.append("silver_bureau")
+            log.error("GX silver_suite FAIL: silver_bureau / silver_bureau_balance")
+        else:
+            log.info("GX silver_suite PASS: silver_bureau")
+
+    if failures:
+        raise RuntimeError(f"GX silver_suite FAILED for: {failures} — DAG stopped")
+
+    log.info("GX silver_suite: ALL PASS")
+
+
+if __name__ == "__main__":
+    import sys
+    env = sys.argv[1] if len(sys.argv) > 1 else "dev"
+    run(env=env)
+</file>
+
+<file path="silver/transforms.py">
+"""
+Pandas-based Silver transforms — mirrors the PySpark logic in glue/.
+Used for: local dev testing + unit tests.
+
+Each function takes a raw DataFrame (Bronze-equivalent) and returns clean Silver DataFrame.
+Column names and transform order match PIPELINE_SPEC exactly.
+"""
+
+import hashlib
+import pandas as pd
+
+
+def _sha256(value) -> str | None:
+    if pd.isna(value):
+        return None
+    return hashlib.sha256(str(value).encode()).hexdigest()
+
+
+# ── Application ──────────────────────────────────────────────────────────────
+
+APPLICATION_COLS = [
+    "SK_ID_CURR", "TARGET", "NAME_CONTRACT_TYPE", "AMT_CREDIT", "AMT_ANNUITY",
+    "AMT_INCOME_TOTAL", "AMT_GOODS_PRICE", "NAME_INCOME_TYPE", "NAME_EDUCATION_TYPE",
+    "NAME_FAMILY_STATUS", "NAME_HOUSING_TYPE", "DAYS_BIRTH", "DAYS_EMPLOYED",
+    "FLAG_OWN_CAR", "FLAG_OWN_REALTY", "CNT_CHILDREN", "OCCUPATION_TYPE",
+    "ORGANIZATION_TYPE", "REGION_RATING_CLIENT", "EXT_SOURCE_1", "EXT_SOURCE_2",
+    "EXT_SOURCE_3", "ingestion_ts", "ingestion_date",
+]
+
+
+def transform_application(df: pd.DataFrame) -> pd.DataFrame:
+    existing = [c for c in APPLICATION_COLS if c in df.columns]
+    out = df[existing].copy()
+
+    # DI-001: XNA → NULL
+    out["ORGANIZATION_TYPE"] = out["ORGANIZATION_TYPE"].replace("XNA", None)
+
+    # DI-002: 365243 → NULL (before PII mask)
+    out["DAYS_EMPLOYED_CLEAN"] = out["DAYS_EMPLOYED"].where(out["DAYS_EMPLOYED"] != 365243, other=None)
+
+    # PII: SHA-256 — cast to int before str() to avoid "-3000.0" float repr
+    out["DAYS_EMPLOYED_MASKED"] = out["DAYS_EMPLOYED_CLEAN"].apply(
+        lambda x: _sha256(int(x)) if pd.notna(x) else None
+    )
+    out["DAYS_BIRTH_MASKED"] = out["DAYS_BIRTH"].apply(
+        lambda x: _sha256(int(x)) if pd.notna(x) else None
+    )
+
+    # Drop raw PII
+    out = out.drop(columns=["DAYS_BIRTH", "DAYS_EMPLOYED", "DAYS_EMPLOYED_CLEAN"], errors="ignore")
+
+    # Dedup: keep latest per SK_ID_CURR
+    out = (
+        out.sort_values("ingestion_ts", ascending=False)
+        .drop_duplicates(subset=["SK_ID_CURR"], keep="first")
+        .reset_index(drop=True)
+    )
+    return out
+
+
+# ── Bureau ────────────────────────────────────────────────────────────────────
+
+BUREAU_COLS = [
+    "SK_ID_CURR", "SK_ID_BUREAU", "CREDIT_ACTIVE", "CREDIT_CURRENCY",
+    "DAYS_CREDIT", "CREDIT_DAY_OVERDUE", "DAYS_CREDIT_ENDDATE",
+    "DAYS_CREDIT_UPDATE", "AMT_CREDIT_SUM", "AMT_CREDIT_SUM_DEBT",
+    "AMT_CREDIT_SUM_LIMIT", "AMT_CREDIT_SUM_OVERDUE", "CREDIT_TYPE",
+    "CNT_CREDIT_PROLONG", "ingestion_ts", "ingestion_date",
+]
+
+
+def transform_bureau(df: pd.DataFrame) -> pd.DataFrame:
+    existing = [c for c in BUREAU_COLS if c in df.columns]
+    out = df[existing].copy()
+    out = (
+        out.sort_values("ingestion_ts", ascending=False)
+        .drop_duplicates(subset=["SK_ID_BUREAU"], keep="first")
+        .reset_index(drop=True)
+    )
+    return out
+
+
+# ── Bureau Balance ────────────────────────────────────────────────────────────
+
+def transform_bureau_balance(df: pd.DataFrame) -> pd.DataFrame:
+    # Filter to most recent month per bureau record
+    recent = df[df["MONTHS_BALANCE"] == 0].copy()
+
+    # 1 row per SK_ID_BUREAU (STATUS at MONTHS_BALANCE=0)
+    out = (
+        recent[["SK_ID_BUREAU", "STATUS", "ingestion_ts", "ingestion_date"]]
+        .drop_duplicates(subset=["SK_ID_BUREAU"], keep="first")
+        .reset_index(drop=True)
+    )
+    return out
+
+
+# ── Previous Application ──────────────────────────────────────────────────────
+
+PREV_APP_COLS = [
+    "SK_ID_PREV", "SK_ID_CURR", "NAME_CONTRACT_TYPE", "AMT_CREDIT",
+    "AMT_APPLICATION", "NAME_CONTRACT_STATUS", "DAYS_DECISION",
+    "NAME_PRODUCT_TYPE", "ingestion_ts", "ingestion_date",
+]
+
+
+def transform_previous_application(df: pd.DataFrame) -> pd.DataFrame:
+    existing = [c for c in PREV_APP_COLS if c in df.columns]
+    return df[existing].copy().reset_index(drop=True)
+
+
+# ── Installments ──────────────────────────────────────────────────────────────
+
+INSTALLMENTS_COLS = [
+    "SK_ID_PREV", "SK_ID_CURR", "NUM_INSTALMENT_VERSION", "NUM_INSTALMENT_NUMBER",
+    "DAYS_INSTALMENT", "DAYS_ENTRY_PAYMENT", "AMT_INSTALMENT", "AMT_PAYMENT",
+    "ingestion_ts", "ingestion_date",
+]
+
+
+def transform_installments(df: pd.DataFrame) -> pd.DataFrame:
+    existing = [c for c in INSTALLMENTS_COLS if c in df.columns]
+    out = df[existing].copy()
+    # Dedup on composite key — keep latest
+    out = (
+        out.sort_values("ingestion_ts", ascending=False)
+        .drop_duplicates(subset=["SK_ID_PREV", "NUM_INSTALMENT_NUMBER"], keep="first")
+        .reset_index(drop=True)
+    )
+    return out
+
+
+# ── POS Cash Balance ──────────────────────────────────────────────────────────
+
+POS_CASH_COLS = [
+    "SK_ID_PREV", "SK_ID_CURR", "MONTHS_BALANCE", "CNT_INSTALMENT",
+    "CNT_INSTALMENT_FUTURE", "NAME_CONTRACT_STATUS", "SK_DPD", "SK_DPD_DEF",
+    "ingestion_ts", "ingestion_date",
+]
+
+
+def transform_pos_cash(df: pd.DataFrame) -> pd.DataFrame:
+    existing = [c for c in POS_CASH_COLS if c in df.columns]
+    return df[existing].copy().reset_index(drop=True)
+
+
+# ── Credit Card Balance ───────────────────────────────────────────────────────
+
+CREDIT_CARD_COLS = [
+    "SK_ID_PREV", "SK_ID_CURR", "MONTHS_BALANCE", "AMT_BALANCE",
+    "AMT_CREDIT_LIMIT_ACTUAL", "AMT_DRAWINGS_CURRENT", "AMT_PAYMENT_CURRENT",
+    "SK_DPD", "NAME_CONTRACT_STATUS", "ingestion_ts", "ingestion_date",
+]
+
+
+def transform_credit_card(df: pd.DataFrame) -> pd.DataFrame:
+    existing = [c for c in CREDIT_CARD_COLS if c in df.columns]
+    return df[existing].copy().reset_index(drop=True)
+</file>
+
+<file path="tests/unit/test_bronze_ingest.py">
+"""
+Unit tests for bronze/ingest_bronze.py — dev mode (local parquet, no AWS).
+"""
+
+import sys
+import shutil
+import pandas as pd
+import pytest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parents[2]))
+from bronze.ingest_bronze import ingest_dev
+
+
+@pytest.fixture(autouse=True)
+def cleanup(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    yield
+    # cleanup handled by tmp_path fixture
+
+
+def _write_sample_csv(tmp_path: Path, filename: str, pk_col: str, rows: int = 5, nulls: int = 0):
+    data = {pk_col: list(range(1, rows + 1 - nulls)) + [None] * nulls}
+    data["AMT_CREDIT"] = [100000.0] * rows
+    data["NAME_CONTRACT_TYPE"] = ["Cash loans"] * rows
+    data["ingestion_ts"] = ["2026-05-12T00:00:00"] * rows
+    data["ingestion_date"] = ["2026-05-12"] * rows
+    (tmp_path / "data").mkdir(exist_ok=True)
+    path = tmp_path / "data" / filename
+    pd.DataFrame(data).to_csv(path, index=False)
+    return path
+
+
+def test_dev_ingest_application_clean(tmp_path):
+    _write_sample_csv(tmp_path, "application_train_dev_1000rows.csv", "SK_ID_CURR", rows=5)
+    result = ingest_dev("application_train", "2026-05-12")
+    assert result["rows_written"] == 5
+    assert result["quarantine_rows"] == 0
+
+
+def test_dev_ingest_quarantines_null_pk(tmp_path):
+    _write_sample_csv(tmp_path, "application_train_dev_1000rows.csv", "SK_ID_CURR", rows=5, nulls=2)
+    result = ingest_dev("application_train", "2026-05-12")
+    assert result["rows_written"] == 3
+    assert result["quarantine_rows"] == 2
+
+
+def test_dev_ingest_writes_parquet(tmp_path):
+    _write_sample_csv(tmp_path, "application_train_dev_1000rows.csv", "SK_ID_CURR", rows=3)
+    ingest_dev("application_train", "2026-05-12")
+    out = tmp_path / "data" / "bronze" / "application_train" / "ingestion_date=2026-05-12" / "part-000.parquet"
+    assert out.exists()
+
+
+def test_dev_ingest_missing_file_returns_zero(tmp_path):
+    (tmp_path / "data").mkdir(exist_ok=True)
+    result = ingest_dev("bureau", "2026-05-12")
+    assert result["rows_written"] == 0
+
+
+def test_dev_ingest_adds_metadata_columns(tmp_path):
+    _write_sample_csv(tmp_path, "application_train_dev_1000rows.csv", "SK_ID_CURR", rows=2)
+    ingest_dev("application_train", "2026-05-12")
+    out = tmp_path / "data" / "bronze" / "application_train" / "ingestion_date=2026-05-12" / "part-000.parquet"
+    df = pd.read_parquet(out)
+    assert "ingestion_ts" in df.columns
+    assert "ingestion_date" in df.columns
+</file>
+
+<file path="tests/unit/test_silver_transforms.py">
+"""
+Unit tests for silver/transforms.py — tests all transform functions with pandas.
+
+Covers:
+  - DI-001: ORGANIZATION_TYPE XNA → NULL
+  - DI-002: DAYS_EMPLOYED 365243 → NULL before SHA-256
+  - PII: DAYS_BIRTH and DAYS_EMPLOYED SHA-256 applied
+  - PII: raw columns dropped from output
+  - Dedup logic per table
+  - bureau_balance MONTHS_BALANCE=0 filter
+"""
+
+import hashlib
+import pandas as pd
+import pytest
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parents[2]))
+from silver.transforms import (
+    transform_application,
+    transform_bureau,
+    transform_bureau_balance,
+    transform_previous_application,
+    transform_installments,
+    transform_pos_cash,
+    transform_credit_card,
+)
+
+
+def _sha256(val) -> str:
+    return hashlib.sha256(str(val).encode()).hexdigest()
+
+
+def _make_app_df(**overrides) -> pd.DataFrame:
+    base = {
+        "SK_ID_CURR": [100001, 100002],
+        "TARGET": [0, 1],
+        "NAME_CONTRACT_TYPE": ["Cash loans", "Revolving loans"],
+        "AMT_CREDIT": [500000.0, 250000.0],
+        "AMT_ANNUITY": [25000.0, 10000.0],
+        "AMT_INCOME_TOTAL": [100000.0, 80000.0],
+        "AMT_GOODS_PRICE": [450000.0, 230000.0],
+        "NAME_INCOME_TYPE": ["Working", "Commercial associate"],
+        "NAME_EDUCATION_TYPE": ["Secondary", "Higher education"],
+        "NAME_FAMILY_STATUS": ["Married", "Single"],
+        "NAME_HOUSING_TYPE": ["House / apartment", "Rented apartment"],
+        "DAYS_BIRTH": [-12000, -15000],
+        "DAYS_EMPLOYED": [-3000, 365243],
+        "FLAG_OWN_CAR": ["Y", "N"],
+        "FLAG_OWN_REALTY": ["Y", "Y"],
+        "CNT_CHILDREN": [0, 1],
+        "OCCUPATION_TYPE": ["Laborers", None],
+        "ORGANIZATION_TYPE": ["Business Entity Type 3", "XNA"],
+        "REGION_RATING_CLIENT": [2, 1],
+        "EXT_SOURCE_1": [0.5, 0.3],
+        "EXT_SOURCE_2": [0.6, 0.4],
+        "EXT_SOURCE_3": [0.7, None],
+        "ingestion_ts": ["2026-05-12T00:00:00", "2026-05-12T00:00:00"],
+        "ingestion_date": ["2026-05-12", "2026-05-12"],
+    }
+    base.update(overrides)
+    return pd.DataFrame(base)
+
+
+class TestTransformApplication:
+    def test_xna_becomes_null(self):
+        df = _make_app_df()
+        out = transform_application(df)
+        assert out["ORGANIZATION_TYPE"].isna().any(), "XNA should become NULL"
+        assert "XNA" not in out["ORGANIZATION_TYPE"].dropna().values
+
+    def test_days_employed_365243_masked_as_null(self):
+        df = _make_app_df()
+        out = transform_application(df)
+        # Row with DAYS_EMPLOYED=365243 → DAYS_EMPLOYED_MASKED should be NULL
+        row = out[out["SK_ID_CURR"] == 100002]
+        assert pd.isna(row["DAYS_EMPLOYED_MASKED"].values[0]), "365243 should yield NULL masked value"
+
+    def test_days_employed_non_365243_is_masked(self):
+        df = _make_app_df()
+        out = transform_application(df)
+        row = out[out["SK_ID_CURR"] == 100001]
+        expected = _sha256(-3000)
+        assert row["DAYS_EMPLOYED_MASKED"].values[0] == expected
+
+    def test_days_birth_always_masked(self):
+        df = _make_app_df()
+        out = transform_application(df)
+        for _, row in out.iterrows():
+            assert pd.notna(row["DAYS_BIRTH_MASKED"]), "DAYS_BIRTH_MASKED must never be null"
+            assert len(row["DAYS_BIRTH_MASKED"]) == 64, "SHA-256 hex must be 64 chars"
+
+    def test_raw_pii_columns_dropped(self):
+        df = _make_app_df()
+        out = transform_application(df)
+        assert "DAYS_BIRTH" not in out.columns
+        assert "DAYS_EMPLOYED" not in out.columns
+        assert "DAYS_EMPLOYED_CLEAN" not in out.columns
+
+    def test_dedup_keeps_latest(self):
+        df = pd.concat([_make_app_df()] * 2).reset_index(drop=True)
+        df.loc[2, "ingestion_ts"] = "2026-05-13T00:00:00"  # newer duplicate of row 0
+        df.loc[3, "ingestion_ts"] = "2026-05-13T00:00:00"
+        out = transform_application(df)
+        assert out["SK_ID_CURR"].duplicated().sum() == 0
+        assert len(out) == 2
+
+    def test_output_has_no_days_birth_in_plain(self):
+        df = _make_app_df()
+        out = transform_application(df)
+        # Masked value must differ from original plain string
+        raw_val = str(-12000)
+        assert out["DAYS_BIRTH_MASKED"].values[0] != raw_val
+
+
+class TestTransformBureau:
+    def _make_bureau_df(self):
+        return pd.DataFrame({
+            "SK_ID_CURR": [100001, 100001, 100002],
+            "SK_ID_BUREAU": [200001, 200001, 200002],
+            "CREDIT_ACTIVE": ["Active", "Active", "Closed"],
+            "CREDIT_CURRENCY": ["currency 1"] * 3,
+            "DAYS_CREDIT": [-500, -500, -200],
+            "CREDIT_DAY_OVERDUE": [0, 0, 5],
+            "DAYS_CREDIT_ENDDATE": [100.0, 100.0, 50.0],
+            "DAYS_CREDIT_UPDATE": [-10, -10, -5],
+            "AMT_CREDIT_SUM": [100000.0, 100000.0, 50000.0],
+            "AMT_CREDIT_SUM_DEBT": [50000.0, 50000.0, 0.0],
+            "AMT_CREDIT_SUM_LIMIT": [100000.0, 100000.0, 50000.0],
+            "AMT_CREDIT_SUM_OVERDUE": [0.0, 0.0, 0.0],
+            "CREDIT_TYPE": ["Consumer credit"] * 3,
+            "CNT_CREDIT_PROLONG": [0, 0, 1],
+            "ingestion_ts": ["2026-05-12T01:00:00", "2026-05-12T00:00:00", "2026-05-12T00:00:00"],
+            "ingestion_date": ["2026-05-12"] * 3,
+        })
+
+    def test_dedup_on_sk_id_bureau(self):
+        df = self._make_bureau_df()
+        out = transform_bureau(df)
+        assert out["SK_ID_BUREAU"].duplicated().sum() == 0
+
+    def test_keeps_latest_ingestion_ts(self):
+        df = self._make_bureau_df()
+        out = transform_bureau(df)
+        row = out[out["SK_ID_BUREAU"] == 200001]
+        assert row["ingestion_ts"].values[0] == "2026-05-12T01:00:00"
+
+
+class TestTransformBureauBalance:
+    def _make_bb_df(self):
+        return pd.DataFrame({
+            "SK_ID_BUREAU": [200001, 200001, 200001, 200002],
+            "MONTHS_BALANCE": [0, -1, -2, 0],
+            "STATUS": ["C", "0", "X", "1"],
+            "ingestion_ts": ["2026-05-12T00:00:00"] * 4,
+            "ingestion_date": ["2026-05-12"] * 4,
+        })
+
+    def test_filters_months_balance_zero(self):
+        df = self._make_bb_df()
+        out = transform_bureau_balance(df)
+        assert len(out) == 2  # 1 per SK_ID_BUREAU
+
+    def test_one_row_per_bureau(self):
+        df = self._make_bb_df()
+        out = transform_bureau_balance(df)
+        assert out["SK_ID_BUREAU"].duplicated().sum() == 0
+
+    def test_status_at_months_zero(self):
+        df = self._make_bb_df()
+        out = transform_bureau_balance(df)
+        row = out[out["SK_ID_BUREAU"] == 200001]
+        assert row["STATUS"].values[0] == "C"
+
+
+class TestTransformPreviousApplication:
+    def test_column_subset(self):
+        df = pd.DataFrame({
+            "SK_ID_PREV": [300001],
+            "SK_ID_CURR": [100001],
+            "NAME_CONTRACT_TYPE": ["Cash loans"],
+            "AMT_CREDIT": [100000.0],
+            "AMT_APPLICATION": [100000.0],
+            "NAME_CONTRACT_STATUS": ["Approved"],
+            "DAYS_DECISION": [-500],
+            "NAME_PRODUCT_TYPE": ["walk-in"],
+            "EXTRA_COLUMN": ["drop me"],
+            "ingestion_ts": ["2026-05-12T00:00:00"],
+            "ingestion_date": ["2026-05-12"],
+        })
+        out = transform_previous_application(df)
+        assert "EXTRA_COLUMN" not in out.columns
+        assert "SK_ID_PREV" in out.columns
+
+
+class TestTransformInstallments:
+    def _make_install_df(self):
+        return pd.DataFrame({
+            "SK_ID_PREV": [300001, 300001, 300002],
+            "SK_ID_CURR": [100001, 100001, 100002],
+            "NUM_INSTALMENT_VERSION": [1.0, 1.0, 1.0],
+            "NUM_INSTALMENT_NUMBER": [1.0, 1.0, 2.0],
+            "DAYS_INSTALMENT": [-100.0, -100.0, -50.0],
+            "DAYS_ENTRY_PAYMENT": [-95.0, -95.0, -48.0],
+            "AMT_INSTALMENT": [5000.0, 5000.0, 3000.0],
+            "AMT_PAYMENT": [5000.0, 5000.0, 3000.0],
+            "ingestion_ts": ["2026-05-12T01:00:00", "2026-05-12T00:00:00", "2026-05-12T00:00:00"],
+            "ingestion_date": ["2026-05-12"] * 3,
+        })
+
+    def test_dedup_on_composite_key(self):
+        df = self._make_install_df()
+        out = transform_installments(df)
+        dupes = out.duplicated(subset=["SK_ID_PREV", "NUM_INSTALMENT_NUMBER"]).sum()
+        assert dupes == 0
+
+    def test_keeps_latest_for_duplicate_key(self):
+        df = self._make_install_df()
+        out = transform_installments(df)
+        row = out[(out["SK_ID_PREV"] == 300001) & (out["NUM_INSTALMENT_NUMBER"] == 1.0)]
+        assert row["ingestion_ts"].values[0] == "2026-05-12T01:00:00"
+
+
+class TestTransformPosCash:
+    def test_column_subset(self):
+        df = pd.DataFrame({
+            "SK_ID_PREV": [400001],
+            "SK_ID_CURR": [100001],
+            "MONTHS_BALANCE": [-1],
+            "CNT_INSTALMENT": [12.0],
+            "CNT_INSTALMENT_FUTURE": [6.0],
+            "NAME_CONTRACT_STATUS": ["Active"],
+            "SK_DPD": [0],
+            "SK_DPD_DEF": [0],
+            "IRRELEVANT_COL": ["x"],
+            "ingestion_ts": ["2026-05-12T00:00:00"],
+            "ingestion_date": ["2026-05-12"],
+        })
+        out = transform_pos_cash(df)
+        assert "IRRELEVANT_COL" not in out.columns
+        assert "SK_DPD" in out.columns
+
+
+class TestTransformCreditCard:
+    def test_column_subset(self):
+        df = pd.DataFrame({
+            "SK_ID_PREV": [500001],
+            "SK_ID_CURR": [100001],
+            "MONTHS_BALANCE": [-1],
+            "AMT_BALANCE": [10000.0],
+            "AMT_CREDIT_LIMIT_ACTUAL": [20000],
+            "AMT_DRAWINGS_CURRENT": [500.0],
+            "AMT_PAYMENT_CURRENT": [1000.0],
+            "SK_DPD": [0],
+            "NAME_CONTRACT_STATUS": ["Active"],
+            "EXTRA": ["drop"],
+            "ingestion_ts": ["2026-05-12T00:00:00"],
+            "ingestion_date": ["2026-05-12"],
+        })
+        out = transform_credit_card(df)
+        assert "EXTRA" not in out.columns
+        assert "AMT_BALANCE" in out.columns
+</file>
+
+<file path=".env.example">
+# home-credit-risk-pipeline — Credential Template
+# Copy ke .env.dev / .env.staging / .env.prod
+# JANGAN commit mana-mana .env
+
+ENV=dev
+CLOUD=aws
+
+# AWS
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+AWS_REGION=ap-southeast-1
+S3_BUCKET_DEV=home-credit-risk-dev
+S3_BUCKET_STAGING=home-credit-risk-staging
+S3_BUCKET_PROD=home-credit-risk-prod
+GLUE_JOB_NAME=home-credit-silver-transform
+
+# Databricks (Serverless SQL ONLY — no Classic Compute)
+DATABRICKS_HOST=https://your-workspace.azuredatabricks.net
+DATABRICKS_TOKEN=
+DATABRICKS_SQL_WAREHOUSE_ID=
+
+# Snowflake
+SNOWFLAKE_ACCOUNT=
+SNOWFLAKE_USER=
+SNOWFLAKE_PASSWORD=
+SNOWFLAKE_DATABASE=HOME_CREDIT_RISK
+SNOWFLAKE_SCHEMA_DEV=DEV
+SNOWFLAKE_SCHEMA_STAGING=STAGING
+SNOWFLAKE_SCHEMA_PROD=PROD
+SNOWFLAKE_WAREHOUSE=COMPUTE_WH
+SNOWFLAKE_ROLE=SYSADMIN
+
+# Airflow
+AIRFLOW__CORE__FERNET_KEY=
+AIRFLOW__WEBSERVER__SECRET_KEY=
+
+# Slack
+SLACK_WEBHOOK_URL=
+SLACK_CHANNEL=#data-pipeline-alerts
+
+# dbt
+DBT_PROFILES_DIR=./gold
+
+# Kaggle — Competition Format (BUKAN standard dataset)
+# Accept rules dulu: kaggle.com/competitions/home-credit-default-risk
+# NOTE: KAGGLE_FILENAME tidak diperlukan untuk competition format.
+#       Competition download semua files sekaligus via:
+#       kaggle competitions download -c home-credit-default-risk
+#       (Standard dataset guna KAGGLE_FILENAME — competition tak perlu)
+KAGGLE_USERNAME=
+KAGGLE_KEY=
+KAGGLE_COMPETITION=home-credit-default-risk
+
+# Dataset path (auto-set by download_dataset.py — jangan edit manual)
+DATASET_SOURCE_PATH=
+DEV_SAMPLE_ROWS=1000
+</file>
+
+<file path=".gitignore">
+# Claude
+CLAUDE.md
+.claude/
+HOW_IT_WORKS.txt
+PROJECT_STATUS.md
+COST_LOG.md
+docs/JOURNEY_LOG.md
+docs/INTERVIEW_GUIDE.md
+docs/DEBATE_LOG_phase_*.md
+sign-offs/
+
+# Credentials
+.env
+.env.dev
+.env.staging
+.env.prod
+*.env
+credentials/
+
+# Data
+*.parquet
+*.csv
+*.xlsx
+data/
+raw/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# dbt
+.dbt/
+dbt_packages/
+target/
+dbt_home_credit/target/
+
+# Great Expectations (generated artifacts)
+gx/validations/
+gx/data_docs/
+gx/checkpoints/
+
+# Airflow
+airflow/logs/
+airflow.cfg
+airflow.db
+standalone_admin_password.txt
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/settings.json
+.idea/
+.DS_Store
+</file>
+
+<file path=".mcp.json">
+{
+  "mcpServers": {
+    "snowflake": {
+      "command": "uvx",
+      "args": ["mcp-server-snowflake"],
+      "env": {
+        "SNOWFLAKE_ACCOUNT": "${SNOWFLAKE_ACCOUNT}",
+        "SNOWFLAKE_USER": "${SNOWFLAKE_USER}",
+        "SNOWFLAKE_PASSWORD": "${SNOWFLAKE_PASSWORD}",
+        "SNOWFLAKE_DATABASE": "${SNOWFLAKE_DATABASE}",
+        "SNOWFLAKE_WAREHOUSE": "${SNOWFLAKE_WAREHOUSE}"
+      }
+    },
+    "databricks": {
+      "command": "databricks",
+      "args": ["mcp", "serve"],
+      "env": {
+        "DATABRICKS_HOST": "${DATABRICKS_HOST}",
+        "DATABRICKS_TOKEN": "${DATABRICKS_TOKEN}"
+      }
+    },
+    "aws-docs": {
+      "command": "uvx",
+      "args": ["awslabs.aws-documentation-mcp-server@latest"]
+    },
+    "dbt": {
+      "command": "dbt-mcp",
+      "args": [],
+      "env": {
+        "DBT_PROFILES_DIR": "${DBT_PROFILES_DIR}"
+      }
+    }
+  }
+}
+</file>
+
+<file path="README.md">
+# home-credit-risk-pipeline
+
+End-to-end credit risk profiling pipeline — Home Credit Default Risk dataset (307,511 loan applications across 7 source tables).
+
+Built as a banking data engineering portfolio project demonstrating **Kimball Star Schema** modelling across a full medallion architecture: Bronze → Silver → Gold → BI, with PII masking (SHA-256), SCD Type 2 historical tracking, and automated data quality gating.
+
+---
+
+## Problem Statement
+
+| Problem | Solution |
+|---------|----------|
+| Integrate 300k+ credit applications from 7 disparate source tables with schema alignment | Bronze ingestion — all 7 CSVs unified under Delta Lake with `ingestion_ts` + `ingestion_date` |
+| Mask sensitive applicant fields (DAYS_BIRTH, DAYS_EMPLOYED) for GDPR compliance | Silver Glue jobs — SHA-256 after 365243→NULL substitution (DI-002) |
+| Track applicant demographic changes over time for compliance audit trail | `dim_applicant` — SCD Type 2 via dbt snapshot (`start_date`, `end_date`, `is_current`) |
+| Quantify credit default risk and bureau credit exposure per applicant | `fact_loan_application` + `fact_bureau_credit` — KPI-01 to KPI-05 |
+
+---
+
+## Data Model — Kimball Star Schema
+
+| Table | Type | Grain | Why |
+|-------|------|-------|-----|
+| `fact_loan_application` | Fact | 1 row = 1 loan application (SK_ID_CURR) | Central fact — default rate, income ratios, credit amounts |
+| `fact_bureau_credit` | Fact | 1 row = 1 bureau credit record (SK_ID_BUREAU) | External bureau exposure per applicant |
+| `fact_installment_payment` | Fact | 1 row = 1 installment payment (SK_ID_PREV + NUM) | Payment punctuality — days early/late |
+| `dim_applicant` | Dimension | SCD Type 2 — 1 row per version | Historical tracking — income type, education, family status changes |
+| `dim_loan_type` | Dimension | SCD Type 1 — 1 row per contract type | Static lookup — Cash loans / Revolving loans |
+| `dim_credit_status` | Dimension | SCD Type 1 — 1 row per CREDIT_ACTIVE value | Static lookup — Active / Closed / Bad debt / Sold |
+
+**Paradigm:** Kimball chosen over OBT — bureau_balance (27M rows) + installments (13M rows) as OBT nested arrays → AWS Glue OOM risk on free tier. Kimball joins deferred to Snowflake compute. Documented in `docs/ADR/ADR-001-kimball-star-schema.md`.
+
+---
+
+## Stack
+
+| Layer | Tool | Note |
+|-------|------|------|
+| Dataset | Home Credit Default Risk (Kaggle Competition API) | 7 CSV files — 300k–27M rows each |
+| Ingestion | Python + boto3 | CSV → S3 landing → Delta Lake Bronze |
+| Storage | AWS S3 | Free tier 5GB — landing + Bronze + Silver |
+| Bronze | Delta Lake on S3 | ACID, time travel, raw schema + metadata cols |
+| Silver | AWS Glue (PySpark) | 5 Glue jobs — G.1X × 2 workers, Glue 4.0 |
+| Gold | dbt Core + Snowflake | staging → intermediate → mart (3-layer + snapshots) |
+| Orchestration | Apache Airflow standalone | localhost:8080, 3 chained DAGs |
+| Quality | Great Expectations | `bronze_suite` + `silver_suite` — gate before each layer |
+| Alerting | Slack webhook | DAG pass/fail + pipeline health |
+| BI | Power BI | Gold consumer — credit risk dashboard |
+| Analytics | Databricks Serverless SQL | Query layer ONLY — no Spark jobs |
+
+---
+
+## Architecture
+
+```
+Home Credit CSVs (7 tables, 300k–27M rows each)
+    ↓ Python + boto3 (bronze/download_dataset.py)
+AWS S3 Landing Zone  s3://{bucket}/landing/
+    ↓ Airflow: bronze_ingestion_dag — ingest_bronze.py × 7 tables (parallel)
+Bronze — Delta Lake on S3  s3://{bucket}/bronze/{table}/ingestion_date={date}/
+    │  Raw schema + ingestion_ts + ingestion_date | GX: bronze_suite
+    ↓ Airflow: silver_transforms_dag — 5 AWS Glue PySpark jobs
+Silver — Delta Lake on S3  s3://{bucket}/silver/silver_{table}/ingestion_date={date}/
+    │  PII masked | XNA→NULL | 365243→NULL | Deduped | Delta MERGE upsert
+    │  GX: silver_suite (PII check, dedup, RI orphan check)
+    ↓ Snowpipe / external stage
+Snowflake  HOME_CREDIT_RISK  (schemas: DEV / STAGING / PROD)
+    ↓ Airflow: gold_dbt_dag — dbt Core
+Gold — Kimball Star Schema
+    staging → snap_applicant (SCD2) → intermediate → mart
+    ↓
+Power BI Credit Risk Dashboard | Databricks Serverless SQL
+```
+
+---
+
+## Key KPIs
+
+| KPI | Formula | dbt Location |
+|-----|---------|--------------|
+| KPI-01: Default rate (%) | `COUNT(target=1) / COUNT(*) × 100` | `fact_loan_application` |
+| KPI-02: Bureau exposure per applicant | `SUM(amt_credit_sum) GROUP BY applicant` | `fact_bureau_credit` |
+| KPI-03: Overdue rate (%) | `COUNT(credit_day_overdue > 0) / COUNT(*)` | `fact_bureau_credit` |
+| KPI-04: Income-to-credit ratio | `amt_income_total / NULLIF(amt_credit, 0)` | `fact_loan_application` |
+| KPI-05: Payment punctuality | `AVG(days_payment_diff)` — positive = late, negative = early | `fact_installment_payment` |
+
+---
+
+## SCD Type 2 — dim_applicant
+
+```
+dbt snapshot: snap_applicant.sql
+  strategy   : check
+  unique_key : applicant_id  (= SK_ID_CURR)
+  check_cols : [name_income_type, name_education_type, name_family_status, cnt_children]
+
+mart alias: dim_applicant.sql
+  dbt_valid_from → start_date
+  dbt_valid_to   → end_date
+  CASE WHEN dbt_valid_to IS NULL THEN TRUE ELSE FALSE END → is_current
+
+dbt test: assert_scd2_one_current_per_applicant.sql
+  → exactly 1 is_current=TRUE per applicant_id at all times
+```
+
+---
+
+## PII Masking Strategy
+
+```
+Columns : DAYS_BIRTH, DAYS_EMPLOYED
+Method  : SHA-256 — hashlib.sha256(str(value).encode()).hexdigest()
+Order   : 365243 → NULL first (DI-002), THEN SHA-256 (never hash the sentinel value)
+Applied : Bronze → Silver transform (Glue job, before Delta write)
+GX gate : DAYS_BIRTH_MASKED not null | DAYS_EMPLOYED_MASKED not in sha256('365243')
+```
+
+---
+
+## Source Tables (7 files)
+
+| File | Rows | Bronze → Silver |
+|------|------|-----------------|
+| application_train.csv | 307,511 | 23 cols kept, PII masked, XNA→NULL, dedup SK_ID_CURR |
+| bureau.csv | 1,716,428 | 14 cols, dedup SK_ID_BUREAU |
+| bureau_balance.csv | 27,299,925 | Filter MONTHS_BALANCE=0 → ~1.7M rows in Silver |
+| previous_application.csv | 1,670,214 | 8 cols, no dedup (Silver only — Gold deferred BR-10) |
+| installments_payments.csv | 13,605,401 | 8 cols, dedup on (SK_ID_PREV, NUM_INSTALMENT_NUMBER) |
+| POS_CASH_balance.csv | 10,001,358 | 8 cols, append mode (no natural dedup key) |
+| credit_card_balance.csv | 3,840,312 | 9 cols, append mode (Gold deferred BR-11) |
+
+---
+
+## Project Structure
+
+```
+home-credit-pipeline/
+├── bronze/
+│   ├── download_dataset.py             # Kaggle Competition API → S3 (env-aware)
+│   ├── ingest_bronze.py                # CSV → Delta Lake, PK quarantine, metadata cols
+│   └── generate_dev_data.py            # Synthetic dev data — exact schema match
+├── silver/
+│   └── transforms.py                   # Pandas transforms — mirrors Glue logic (local testing)
+├── glue/
+│   ├── glue_silver_application.py      # PySpark — DI-001, DI-002, SHA-256, MERGE
+│   ├── glue_silver_bureau.py           # PySpark — bureau + bureau_balance (MONTHS_BALANCE=0)
+│   ├── glue_silver_previous_application.py
+│   ├── glue_silver_installments.py
+│   └── glue_silver_balance_tables.py   # POS cash + credit card — append mode
+├── dbt_home_credit/
+│   ├── dbt_project.yml
+│   ├── profiles.yml                    # 3 Snowflake targets: dev / staging / prod
+│   ├── sources.yml
+│   ├── models/
+│   │   ├── staging/                    # stg_application, stg_bureau, stg_bureau_balance, stg_installments
+│   │   ├── intermediate/               # int_applicant_attributes, int_bureau_with_balance, int_installment_payments
+│   │   └── mart/                       # fact_loan_application, fact_bureau_credit, fact_installment_payment
+│   │                                   # dim_applicant (SCD2), dim_loan_type, dim_credit_status
+│   ├── snapshots/
+│   │   └── snap_applicant.sql          # SCD Type 2 — strategy: check, 4 tracked cols
+│   ├── tests/
+│   │   ├── assert_scd2_one_current_per_applicant.sql
+│   │   ├── assert_fk_loan_application_applicant.sql
+│   │   └── assert_fk_bureau_credit_applicant.sql
+│   └── macros/
+│       └── generate_surrogate_key.sql
+├── airflow/dags/
+│   ├── bronze_ingestion_dag.py         # 7 ingest tasks parallel → GX → trigger Silver
+│   ├── silver_transforms_dag.py        # 5 GlueJobOperator → GX → trigger Gold
+│   └── gold_dbt_dag.py                 # staging → snapshot → intermediate → mart → test → Slack
+├── gx/
+│   ├── great_expectations.yml
+│   ├── run_bronze_suite.py             # Row count > 0, PK NOT NULL (WARN — pipeline continues)
+│   └── run_silver_suite.py             # PII, dedup, RI checks (FAIL → DAG stops)
+├── tests/unit/
+│   ├── test_bronze_ingest.py           # 5 tests — quarantine, parquet write, metadata cols
+│   └── test_silver_transforms.py       # 17 tests — DI-001, DI-002, SHA-256, dedup per table
+├── docs/
+│   ├── ADR/ADR-001-kimball-star-schema.md
+│   ├── BRD.md | DRD.md | DATA_MODEL.md | ARCHITECTURE.md | PIPELINE_SPEC.md
+│   └── DATA_DICTIONARY.md
+├── setup.sh
+└── requirements.txt
+```
+
+---
+
+## Phase Completion
+
+| Phase | Deliverable | Status |
+|-------|-------------|--------|
+| 0 | Setup + scaffold | ✅ |
+| 1 | BRD — 6 Must Have, 5 KPI formulas, 6 business rules | ✅ Signed Off 2026-05-12 |
+| 2 | DRD + Data Dictionary + Data Model (conceptual) | ✅ Signed Off 2026-05-12 |
+| 3 | Architecture + PIPELINE_SPEC + Data Model (logical) | ✅ Signed Off 2026-05-12 |
+| 4a | Code — local dev (22/22 pytest, all deliverables built) | 🔶 In Progress |
+| 4b | Cloud promote — Glue staging run, dbt on full dataset | ⏳ |
+| 5 | DQD + OPS Runbook | ⏳ |
+
+---
+
+## Running Locally (Dev — 1,000 rows)
+
+```bash
+# Setup
+bash setup.sh
+cp .env.example .env.dev
+# Fill in: KAGGLE_USERNAME, KAGGLE_KEY, SNOWFLAKE_*, AWS_*
+
+# Accept competition rules first: kaggle.com/competitions/home-credit-default-risk/rules
+python bronze/download_dataset.py --env dev
+
+# Bronze ingestion (local parquet — no AWS needed for dev)
+python bronze/ingest_bronze.py --table application_train --env dev
+
+# Unit tests
+pytest tests/unit/ -v
+
+# dbt (requires Silver data loaded to Snowflake DEV schema)
+dbt run --profiles-dir dbt_home_credit --project-dir dbt_home_credit --target dev
+dbt test --profiles-dir dbt_home_credit --project-dir dbt_home_credit --target dev
+```
+
+---
+
+## Pipeline Evidence
+*(Updated after Phase 4b cloud promote)*
+
+| Step | Result |
+|------|--------|
+| Bronze — 7 tables ingested | ⏳ Phase 4b |
+| Silver — 5 Glue jobs | ⏳ Phase 4b |
+| Snowflake load | ⏳ Phase 4b |
+| dbt run | ⏳ Phase 4b |
+| dbt test | ⏳ Phase 4b |
+| GX bronze_suite | ⏳ Phase 4b |
+| GX silver_suite | ⏳ Phase 4b |
+
+---
+
+*Portfolio — Raja Ahmad Luqman | Analytics & Data Engineering*
+</file>
+
+<file path="requirements.txt">
+# Core
+pandas==2.1.0
+pyarrow==14.0.0
+python-dotenv==1.0.0
+delta-spark==3.0.0
+
+# Kaggle
+kaggle==1.6.14
+
+# AWS
+boto3==1.34.0
+awswrangler==3.5.0
+
+# Airflow
+apache-airflow==2.8.0
+apache-airflow-providers-slack==8.0.0
+apache-airflow-providers-amazon==8.0.0
+apache-airflow-providers-snowflake==5.0.0
+apache-airflow-providers-databricks==6.0.0
+
+# Snowflake
+snowflake-connector-python==3.6.0
+snowflake-sqlalchemy==1.5.0
+
+# dbt
+dbt-core==1.7.0
+dbt-snowflake==1.7.0
+
+# Quality
+great-expectations==0.18.0
+
+# Testing
+pytest==7.4.0
+pytest-cov==4.1.0
+
+# Utils
+PyYAML==6.0.1
+</file>
+
+<file path="setup.sh">
+#!/bin/bash
+# =============================================================================
+# HOME CREDIT RISK PIPELINE — SCAFFOLD v1.0
+# Stack    : AWS Glue + S3 + Snowflake + dbt + GX + Airflow
+# Dataset  : Kaggle Competition — home-credit-default-risk
+# Modelling: Kimball — Star Schema
+# Cloud    : AWS primary
+# Run      : bash setup.sh
+# =============================================================================
+
+PROJECT_NAME="home-credit-risk-pipeline"
+DOMAIN="banking"
+DATASET="Home Credit Default Risk"
+CLOUD="aws"
+MODELLING="Kimball"
+GRAIN="fact_loan_application: 1 row = 1 loan application"
+KAGGLE_COMPETITION="home-credit-default-risk"
+DEV_SAMPLE_ROWS=1000
+
+echo ""
+echo "🚀 $PROJECT_NAME — scaffold start"
+echo "   Domain    : $DOMAIN"
+echo "   Dataset   : $DATASET"
+echo "   Cloud     : $CLOUD"
+echo "   Modelling : $MODELLING"
+echo ""
+
+# =============================================================================
+# FOLDERS
+# =============================================================================
+
+mkdir -p docs/ADR
+mkdir -p docs/screenshots
+mkdir -p bronze
+mkdir -p silver
+mkdir -p gold/dbt_models/staging
+mkdir -p gold/dbt_models/intermediate
+mkdir -p gold/dbt_models/marts
+mkdir -p data_quality/expectations
+mkdir -p data_quality/checkpoints
+mkdir -p airflow/dags
+mkdir -p airflow/plugins
+mkdir -p tests/unit
+mkdir -p tests/integration
+mkdir -p infrastructure/terraform
+mkdir -p infrastructure/credentials
+mkdir -p sign-offs
+mkdir -p .claude/agents
+mkdir -p data
+
+echo "✅ Folders created"
+
+# =============================================================================
+# .claude/agents/ — 14 Agent Persona Files
+# =============================================================================
+
+cat > .claude/agents/01-business-analyst.md << 'EOF'
+# Business Analyst (BA)
+
+## Identity
+Experienced BA. Neutral, business-value focused.
+Translate business problems → data requirements.
+
+## Personality
+Positif : Terima idea kalau ada clear business justification
+Negatif : "Apa business impact dia? Kalau tak boleh jawab, scope out."
+
+## Responsibilities
+- Define stakeholders, use cases, KPIs
+- Business rules dan metric formulas
+- Validate setiap feature ada business value
+- Flag immediately kalau nampak scope creep
+
+## Rules
+- WAJIB baca docs/BRD.md sebelum respond
+- Jangan assume requirement yang tak dibincang
+- KPI formula kena explicit — jangan vague
+EOF
+
+cat > .claude/agents/02-product-owner.md << 'EOF'
+# Product Owner (PO)
+
+## Identity
+Scope-obsessed. Prioritize ruthlessly. Delivery-focused.
+
+## Personality
+Positif : Setuju kalau in-scope, high-value, realistic
+Negatif : "Nice to have. Phase 2. Move on."
+
+## Responsibilities
+- Maintain scope boundary
+- Break work into phases
+- Challenge every feature: "Perlu ke sekarang?"
+- Ensure deliverable realistic untuk Codespace constraint
+
+## Priority Framework
+Must Have  : Business critical, blocking downstream
+Should Have: Important tapi not blocking → Phase 2
+Could Have : Nice to have → Phase 3
+Won't Have : Out of scope
+EOF
+
+cat > .claude/agents/03-data-architect.md << 'EOF'
+# Data Architect (DA)
+
+## Identity
+Own data modelling end-to-end. Conceptual → Logical → Physical.
+Collaborate rapat dengan DPE untuk feasibility.
+
+## Personality
+Positif : Setuju kalau model sound, grain clear, paradigm justified
+Negatif : "Grain belum defined. AE tak boleh build dulu."
+
+## Data Model (LOCKED — dari Step 3 Claude.ai session)
+Paradigm : Kimball — Star Schema
+Facts:
+  fact_loan_application    — grain: 1 row = 1 application (SK_ID_CURR)
+  fact_installment_payment — grain: 1 row = 1 installment payment
+  fact_bureau_credit       — grain: 1 row = 1 bureau record per applicant
+Dims:
+  dim_applicant     — SCD Type 2 (start_date, end_date, is_current)
+  dim_loan_type     — SCD Type 1
+  dim_credit_status — SCD Type 1
+
+## Hard Rules
+- Grain LOCKED — jangan reopen debate
+- SCD Type 2 untuk dim_applicant = non-negotiable (resume proof)
+- Silver transforms = AWS Glue SAHAJA — bukan Databricks
+- WAJIB baca docs/DRD.md dan docs/DATA_MODEL.md sebelum respond
+EOF
+
+cat > .claude/agents/04-senior-data-engineer.md << 'EOF'
+# Senior Data Engineer (SDE)
+
+## Identity
+8 tahun experience. Architecture-first.
+Zero tolerance untuk shortcuts yang jadi technical debt.
+
+## Personality
+Positif : Setuju kalau scalable, maintainable, production-grade
+Negatif : "Ini akan break. Kenapa? Sebab..."
+
+## Responsibilities
+- Architecture decisions + ADRs
+- Code review — enforce idempotency, null handling, partitioning
+- Challenge tech choices dengan justifikasi
+- Review sebelum cloud promote
+
+## Non-Negotiables
+- Idempotent pipelines (MERGE bukan INSERT)
+- Explicit null handling
+- Partition strategy defined
+- SHA-256 PII masking BEFORE write ke Silver
+- Stack HANYA dari resume
+EOF
+
+cat > .claude/agents/05-data-engineer.md << 'EOF'
+# Data Engineer (DE)
+
+## Identity
+Hands-on builder. Execute ikut SPEC yang locked.
+
+## Responsibilities
+- Build Bronze layer (ingest 7 CSVs + metadata)
+- Build Silver layer (AWS Glue Spark transforms)
+- PII masking: SHA-256 pada quasi-identifier columns
+- Unit tests setiap function
+
+## Critical Notes
+- Kaggle Competition download: kaggle competitions download -c home-credit-default-risk
+- BUKAN kaggle datasets download
+- Silver = AWS Glue job (Spark) — BUKAN PySpark local untuk cloud
+- Dev = PySpark local mode untuk unit test sahaja
+- Partition Bronze by ingestion_date
+
+## Code Standards
+- WHAT/WHY/WHEN comments
+- Idempotent — MERGE bukan INSERT
+- NULL handling explicit
+- Log errors ke quarantine table
+EOF
+
+cat > .claude/agents/06-analytics-engineer.md << 'EOF'
+# Analytics Engineer (AE)
+
+## Identity
+Own Gold layer dan dbt models.
+
+## Data Model (LOCKED)
+staging__home_credit_applications.sql
+staging__home_credit_bureau.sql
+staging__home_credit_installments.sql
+int_applicant_scd2.sql            <- SCD Type 2 logic here
+int_credit_risk_features.sql
+mart_loan_application.sql         <- fact_loan_application
+mart_applicant_dim.sql            <- dim_applicant (SCD2)
+mart_credit_risk_summary.sql      <- KPI mart
+
+## KPIs to Implement
+- default_rate = COUNT(TARGET=1) / COUNT(*) per segment
+- avg_credit_amount = AVG(AMT_CREDIT) per loan_type
+- bureau_delinquency_rate = COUNT(bureau bad records) / total bureau records
+
+## Hard Rules
+- WAJIB baca DATA_MODEL.md sebelum build
+- SCD Type 2 implementation: start_date, end_date, is_current
+- Grain dari DATA_MODEL.md = non-negotiable
+EOF
+
+cat > .claude/agents/07-data-platform-engineer.md << 'EOF'
+# Data Platform Engineer (DPE)
+
+## Identity
+Own infrastructure. Cost-aware. AWS specialist untuk projek ni.
+
+## Stack untuk Projek Ni (LOCKED)
+Bronze  : AWS Glue (Spark) ingestion → S3 Delta
+Silver  : AWS Glue (Spark) transforms → S3 Delta
+Gold    : dbt Core → Snowflake
+Query   : Databricks Serverless SQL (query only)
+
+## CRITICAL: Databricks Constraint
+⚠️ Databricks = Serverless SQL ONLY
+⚠️ No Classic Compute, no PySpark jobs
+⚠️ Guna untuk SQL analytics queries SAHAJA
+⚠️ Silver transforms MESTI guna AWS Glue
+
+## AWS Free Tier Limits
+S3    : 5GB — monitor usage
+Glue  : 1M DPU-second — monitor closely
+
+## Feasibility Checklist
+[ ] AWS Glue job memory sufficient untuk 7 CSV files?
+[ ] S3 storage dalam 5GB limit untuk dev?
+[ ] Snowflake credit sustainable?
+[ ] Airflow standalone connections configured?
+EOF
+
+cat > .claude/agents/08-data-quality-steward.md << 'EOF'
+# Data Quality Steward (DQS)
+
+## Identity
+Paranoid pasal data quality. PII compliance focus untuk projek ni.
+
+## PII Masking Strategy (LOCKED)
+Columns to SHA-256 mask dalam Silver:
+  DAYS_BIRTH (age proxy)
+  DAYS_EMPLOYED
+Method: hashlib.sha256(str(value).encode()).hexdigest()
+Timing: Bronze → Silver transform (Glue job)
+GX Check: masked != original value
+
+## GX Suites
+bronze_suite : row count, schema match, ingestion_ts not null
+silver_suite : PII masked, nulls handled, dedup verified
+gold_suite   : FK integrity, KPI not null, dbt tests pass
+
+## Referential Integrity
+fact_loan_application.applicant_id → dim_applicant.applicant_id
+fact_installment_payment.SK_ID_CURR → fact_loan_application.SK_ID_CURR
+fact_bureau_credit.SK_ID_CURR → fact_loan_application.SK_ID_CURR
+EOF
+
+cat > .claude/agents/09-project-manager.md << 'EOF'
+# Project Manager (PM)
+
+## Identity
+Enforce timeline. Zero tolerance untuk open loops.
+
+## Responsibilities
+- Facilitate sign-off gates
+- Track blockers + assign owners
+- Enforce 3-round debate limit
+- Update PROJECT_STATUS.md
+
+## Pre-Locked Decisions (jangan reopen)
+✅ Paradigm: Kimball
+✅ Grain: locked per fact table
+✅ SCD: dim_applicant = Type 2
+✅ Cloud: AWS primary
+✅ Databricks: SQL only
+EOF
+
+cat > .claude/agents/10-qa-engineer.md << 'EOF'
+# QA Engineer (QA)
+
+## Test Checklist
+
+### Bronze (7 tables)
+[ ] Row count match source CSV
+[ ] ingestion_ts populated
+[ ] Schema match DRD per table
+[ ] Partition created by date
+
+### Silver
+[ ] SHA-256 masking applied (DAYS_BIRTH, DAYS_EMPLOYED)
+[ ] Dedup successful per SK_ID_CURR
+[ ] Null handling applied
+[ ] Quarantine table populated
+
+### Gold (dbt)
+[ ] dbt run success
+[ ] dbt test pass
+[ ] SCD Type 2 correct (is_current, start_date, end_date)
+[ ] FK integrity pass
+
+### Airflow
+[ ] All tasks green
+[ ] Slack alert fired
+[ ] Retry logic works
+
+Evidence: screenshot semua result → docs/screenshots/
+EOF
+
+cat > .claude/agents/11-finops-agent.md << 'EOF'
+# FinOps Agent
+
+## Token Rules
+Discussion/debate → Sonnet
+Code generation  → Haiku
+Boilerplate      → Haiku
+
+## Cloud Cost Rules (projek ni)
+AWS Glue  : Monitor DPU — 1M limit
+S3        : Monitor 5GB — 7 large CSVs berisiko
+Snowflake : Gold ONLY
+Databricks: SQL queries sahaja — no compute cost dari Spark
+
+## Cost Flags
+- bureau_balance.csv = 27M rows — Glue DPU akan tinggi
+- installments_payments.csv = 13M rows — sama
+- Dev: sample 1000 rows sahaja untuk jimat DPU
+EOF
+
+cat > .claude/agents/12-scope-guardian.md << 'EOF'
+# Scope Guardian
+
+## Veto Triggers
+1. Tools yang tak dalam resume
+2. Column yang tak dalam DRD.md
+3. Same topic >3 rounds
+4. Suggest Spark jobs kat Databricks (Serverless SQL only!)
+5. AE build tanpa grain locked
+
+## Portfolio Scope
+✅ 7-table Bronze ingestion
+✅ AWS Glue Silver transforms + SHA-256 masking
+✅ dbt Gold + SCD Type 2
+✅ GX suites per layer
+✅ Airflow DAG + Slack alert
+✅ Screenshot evidence
+❌ ML model prediction (out of scope)
+❌ Databricks Spark jobs
+EOF
+
+cat > .claude/agents/13-mcp-orchestrator.md << 'EOF'
+# MCP Orchestrator
+
+## Tool Assignments
+Snowflake  → mcp_snowflake
+AWS        → mcp_aws-docs
+dbt        → mcp_dbt
+Databricks → mcp_databricks (SQL queries only)
+
+## Announcement Format
+🔧 MCP ORCHESTRATOR — Tools This Phase:
+[tool]: [capability]
+EOF
+
+cat > .claude/agents/14-git-agent.md << 'EOF'
+# Git Agent
+
+## Hard Rules
+1. JANGAN commit: CLAUDE.md, .claude/, PROJECT_STATUS.md,
+   COST_LOG.md, JOURNEY_LOG.md, sign-offs/, .env.*
+2. JANGAN ada Co-authored-by
+3. Format: [Phase X] [Document] — [summary]
+
+## Files Per Phase
+Phase 1 : docs/BRD.md
+Phase 2 : docs/DRD.md, docs/DATA_DICTIONARY.md
+Phase 3 : docs/ARCHITECTURE.md, docs/PIPELINE_SPEC.md, docs/DATA_MODEL.md
+Phase 4a: bronze/, silver/, gold/, tests/, airflow/dags/
+Phase 4b: docs/screenshots/
+Phase 5 : docs/DQD.md, docs/OPS_RUNBOOK.md, data_quality/
+EOF
+
+echo "✅ 14 agent persona files created"
+
+# =============================================================================
+# .claude/settings.json
+# =============================================================================
+
+cat > .claude/settings.json << 'EOF'
+{
+  "includeCoAuthoredBy": false,
+  "model": "claude-sonnet-4-6",
+  "context": {
+    "autoLoadFiles": [
+      "CLAUDE.md",
+      "PROJECT_STATUS.md"
+    ]
+  }
+}
+EOF
+
+echo "✅ .claude/settings.json created"
+
+# =============================================================================
+# .gitignore
+# =============================================================================
+
+cat > .gitignore << 'EOF'
+# Claude
+CLAUDE.md
+.claude/
+HOW_IT_WORKS.txt
+PROJECT_STATUS.md
+COST_LOG.md
+docs/JOURNEY_LOG.md
+docs/INTERVIEW_GUIDE.md
+sign-offs/
+
+# Credentials
+.env
+.env.dev
+.env.staging
+.env.prod
+*.env
+credentials/
+
+# Data
+*.parquet
+*.csv
+*.xlsx
+data/
+raw/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# dbt
+.dbt/
+dbt_packages/
+target/
+
+# Airflow
+airflow/logs/
+airflow.cfg
+airflow.db
+standalone_admin_password.txt
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/settings.json
+.idea/
+.DS_Store
+EOF
+
+echo "✅ .gitignore created"
+
+# =============================================================================
+# .env.example
+# =============================================================================
+
+cat > .env.example << 'EOF'
+# home-credit-risk-pipeline — Credential Template
+# Copy ke .env.dev / .env.staging / .env.prod
+# JANGAN commit mana-mana .env
+
+ENV=dev
+CLOUD=aws
+
+# AWS
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+AWS_REGION=ap-southeast-1
+S3_BUCKET_DEV=home-credit-risk-dev
+S3_BUCKET_STAGING=home-credit-risk-staging
+S3_BUCKET_PROD=home-credit-risk-prod
+GLUE_JOB_NAME=home-credit-silver-transform
+
+# Databricks (Serverless SQL ONLY — no Classic Compute)
+DATABRICKS_HOST=https://your-workspace.azuredatabricks.net
+DATABRICKS_TOKEN=
+DATABRICKS_SQL_WAREHOUSE_ID=
+
+# Snowflake
+SNOWFLAKE_ACCOUNT=
+SNOWFLAKE_USER=
+SNOWFLAKE_PASSWORD=
+SNOWFLAKE_DATABASE=HOME_CREDIT_RISK
+SNOWFLAKE_SCHEMA_DEV=DEV
+SNOWFLAKE_SCHEMA_STAGING=STAGING
+SNOWFLAKE_SCHEMA_PROD=PROD
+SNOWFLAKE_WAREHOUSE=COMPUTE_WH
+SNOWFLAKE_ROLE=SYSADMIN
+
+# Airflow
+AIRFLOW__CORE__FERNET_KEY=
+AIRFLOW__WEBSERVER__SECRET_KEY=
+
+# Slack
+SLACK_WEBHOOK_URL=
+SLACK_CHANNEL=#data-pipeline-alerts
+
+# dbt
+DBT_PROFILES_DIR=./gold
+
+# Kaggle — Competition Format (BUKAN standard dataset)
+# Accept rules dulu: kaggle.com/competitions/home-credit-default-risk
+# NOTE: KAGGLE_FILENAME tidak diperlukan untuk competition format.
+#       Competition download semua files sekaligus via:
+#       kaggle competitions download -c home-credit-default-risk
+#       (Standard dataset guna KAGGLE_FILENAME — competition tak perlu)
+KAGGLE_USERNAME=
+KAGGLE_KEY=
+KAGGLE_COMPETITION=home-credit-default-risk
+
+# Dataset path (auto-set by download_dataset.py — jangan edit manual)
+DATASET_SOURCE_PATH=
+DEV_SAMPLE_ROWS=1000
+EOF
+
+echo "✅ .env.example created"
+
+# =============================================================================
+# .mcp.json
+# =============================================================================
+
+cat > .mcp.json << 'EOF'
+{
+  "mcpServers": {
+    "snowflake": {
+      "command": "uvx",
+      "args": ["mcp-server-snowflake"],
+      "env": {
+        "SNOWFLAKE_ACCOUNT": "${SNOWFLAKE_ACCOUNT}",
+        "SNOWFLAKE_USER": "${SNOWFLAKE_USER}",
+        "SNOWFLAKE_PASSWORD": "${SNOWFLAKE_PASSWORD}",
+        "SNOWFLAKE_DATABASE": "${SNOWFLAKE_DATABASE}",
+        "SNOWFLAKE_WAREHOUSE": "${SNOWFLAKE_WAREHOUSE}"
+      }
+    },
+    "databricks": {
+      "command": "databricks",
+      "args": ["mcp", "serve"],
+      "env": {
+        "DATABRICKS_HOST": "${DATABRICKS_HOST}",
+        "DATABRICKS_TOKEN": "${DATABRICKS_TOKEN}"
+      }
+    },
+    "aws-docs": {
+      "command": "uvx",
+      "args": ["awslabs.aws-documentation-mcp-server@latest"]
+    },
+    "dbt": {
+      "command": "dbt-mcp",
+      "args": [],
+      "env": {
+        "DBT_PROFILES_DIR": "${DBT_PROFILES_DIR}"
+      }
+    }
+  }
+}
+EOF
+
+echo "✅ .mcp.json created"
+
+# =============================================================================
+# bronze/download_dataset.py — Competition format
+# =============================================================================
+
+cat > bronze/download_dataset.py << 'PYEOF'
+"""
+WHAT : Download Home Credit dataset dari Kaggle Competition API
+WHY  : Competition format berbeza dari standard dataset — kena guna
+       kaggle competitions download, BUKAN kaggle datasets download
+WHEN : Run sekali sebelum pipeline start
+
+CRITICAL: ini Kaggle COMPETITION, bukan standard dataset.
+Command: kaggle competitions download -c home-credit-default-risk
+
+Usage:
+  python bronze/download_dataset.py --env dev
+  python bronze/download_dataset.py --env staging
+  python bronze/download_dataset.py --env prod
+"""
+
+import os
+import argparse
+import logging
+import zipfile
+from pathlib import Path
+from dotenv import load_dotenv
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger(__name__)
+
+# WHAT: 7 source files untuk Home Credit pipeline
+# WHY : Semua kena ingest untuk justify "7 disparate source tables" dalam resume
+ALL_FILES = [
+    "application_train.csv",
+    "bureau.csv",
+    "bureau_balance.csv",
+    "previous_application.csv",
+    "installments_payments.csv",
+    "POS_CASH_balance.csv",
+    "credit_card_balance.csv",
+]
+
+PRIMARY_FILE = "application_train.csv"
+
+
+def load_env(env: str):
+    """
+    WHAT : Load .env file ikut environment
+    WHY  : Setiap env ada credentials berbeza
+    WHEN : First step sebelum any operation
+    """
+    env_file = f".env.{env}"
+    if not Path(env_file).exists():
+        raise FileNotFoundError(
+            f"{env_file} tidak wujud.\n"
+            f"Run: cp .env.example {env_file} dan fill in credentials."
+        )
+    load_dotenv(env_file)
+    log.info(f"Loaded {env_file}")
+
+
+def validate_kaggle_credentials():
+    """
+    WHAT : Validate Kaggle credentials
+    WHY  : Fail fast sebelum API call
+    WHEN : Sebelum download
+    """
+    username = os.getenv("KAGGLE_USERNAME")
+    key = os.getenv("KAGGLE_KEY")
+    if not username or not key:
+        raise EnvironmentError(
+            "KAGGLE_USERNAME dan KAGGLE_KEY mesti diset dalam .env.\n"
+            "Setup: https://www.kaggle.com/settings → API → Create New Token"
+        )
+    os.environ["KAGGLE_USERNAME"] = username
+    os.environ["KAGGLE_KEY"] = key
+    log.info(f"Kaggle credentials validated — user: {username}")
+
+
+def download_competition_dataset(dest_dir: str = "data") -> str:
+    """
+    WHAT : Download Home Credit competition dataset dari Kaggle
+    WHY  : Competition format — guna kaggle competitions download
+           BUKAN kaggle datasets download (akan fail dengan 403)
+    WHEN : Run sekali, skip kalau files dah ada
+    Returns: path to data directory
+    """
+    import kaggle
+
+    competition = os.getenv("KAGGLE_COMPETITION", "home-credit-default-risk")
+    dest_path = Path(dest_dir)
+    dest_path.mkdir(parents=True, exist_ok=True)
+
+    # WHAT: Check kalau primary file dah ada — skip download
+    primary_path = dest_path / PRIMARY_FILE
+    if primary_path.exists():
+        log.info(f"Dataset dah ada: {primary_path} — skip download")
+        return str(dest_path)
+
+    log.info(f"Downloading competition: {competition} → {dest_path}")
+    log.info("⚠️  File besar — bureau_balance.csv = 27M rows. Ambil masa.")
+
+    # WHAT: Download competition files
+    # WHY : Competition API download dan auto-extract
+    kaggle.api.competition_download_files(
+        competition,
+        path=str(dest_path),
+        quiet=False
+    )
+
+    # WHAT: Unzip kalau perlu
+    zip_path = dest_path / f"{competition}.zip"
+    if zip_path.exists():
+        log.info(f"Unzipping {zip_path}...")
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            zf.extractall(dest_path)
+        zip_path.unlink()
+        log.info("Unzip complete")
+
+    # WHAT: Verify semua 7 files ada
+    missing = [f for f in ALL_FILES if not (dest_path / f).exists()]
+    if missing:
+        log.warning(f"Files missing selepas download: {missing}")
+    else:
+        log.info(f"✅ Semua {len(ALL_FILES)} files verified")
+
+    return str(dest_path)
+
+
+def sample_dev_data(data_dir: str, rows: int = 1000) -> str:
+    """
+    WHAT : Sample N rows dari application_train untuk dev
+    WHY  : 307k rows terlalu besar untuk dev — sample jimat memory dan DPU
+    WHEN : Dev environment SAHAJA
+    Returns: path to sampled CSV
+    """
+    import pandas as pd
+
+    source = Path(data_dir) / PRIMARY_FILE
+    sample_path = Path(data_dir) / f"application_train_dev_{rows}rows.csv"
+
+    if sample_path.exists():
+        log.info(f"Dev sample dah ada: {sample_path} — skip")
+        return str(sample_path)
+
+    log.info(f"Sampling {rows} rows dari {source}...")
+    df = pd.read_csv(source, nrows=rows)
+    df.to_csv(sample_path, index=False)
+    log.info(f"Dev sample saved: {sample_path} ({len(df)} rows)")
+    return str(sample_path)
+
+
+def upload_all_to_s3(data_dir: str, env: str) -> dict:
+    """
+    WHAT : Upload semua 7 CSV ke S3 landing zone
+    WHY  : S3 = single source of truth untuk staging/prod pipeline
+    WHEN : Staging + prod environment
+    Returns: dict of {filename: s3_path}
+    """
+    import boto3
+
+    bucket = os.getenv(f"S3_BUCKET_{env.upper()}")
+    region = os.getenv("AWS_REGION", "ap-southeast-1")
+
+    if not bucket:
+        raise EnvironmentError(f"S3_BUCKET_{env.upper()} tidak diset")
+
+    s3 = boto3.client("s3", region_name=region)
+    uploaded = {}
+
+    for filename in ALL_FILES:
+        local_path = Path(data_dir) / filename
+        if not local_path.exists():
+            log.warning(f"File tak jumpa — skip: {filename}")
+            continue
+
+        s3_key = f"landing/{filename}"
+        s3_path = f"s3://{bucket}/{s3_key}"
+
+        # WHAT: Skip kalau dah ada dengan size sama — jimat S3 PUT cost
+        try:
+            resp = s3.head_object(Bucket=bucket, Key=s3_key)
+            if resp["ContentLength"] == local_path.stat().st_size:
+                log.info(f"Skip (same size): {s3_path}")
+                uploaded[filename] = s3_path
+                continue
+        except Exception:
+            pass
+
+        size_mb = local_path.stat().st_size / (1024 * 1024)
+        log.info(f"Uploading {filename} ({size_mb:.1f} MB) → {s3_path}")
+        s3.upload_file(str(local_path), bucket, s3_key)
+        uploaded[filename] = s3_path
+        log.info(f"✅ {filename} uploaded")
+
+    return uploaded
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Download Home Credit competition dataset dari Kaggle"
+    )
+    parser.add_argument("--env", default="dev", choices=["dev", "staging", "prod"])
+    parser.add_argument("--rows", type=int, default=None)
+    args = parser.parse_args()
+
+    log.info(f"=== Dataset Acquisition — env: {args.env} ===")
+
+    load_env(args.env)
+    validate_kaggle_credentials()
+
+    data_dir = download_competition_dataset(dest_dir="data")
+
+    if args.env == "dev":
+        dev_rows = args.rows or int(os.getenv("DEV_SAMPLE_ROWS", "1000"))
+        sample_path = sample_dev_data(data_dir, rows=dev_rows)
+        log.info(f"=== Done — dev dataset: {sample_path} ===")
+        log.info(f"Set DATASET_SOURCE_PATH={sample_path} dalam .env.dev")
+    else:
+        uploaded = upload_all_to_s3(data_dir, env=args.env)
+        log.info(f"=== Done — {len(uploaded)} files uploaded ke S3 ===")
+        for fname, path in uploaded.items():
+            log.info(f"  {fname} → {path}")
+        log.info(f"Set DATASET_SOURCE_PATH=s3://[bucket]/landing/ dalam .env.{args.env}")
+
+
+if __name__ == "__main__":
+    main()
+PYEOF
+
+echo "✅ bronze/download_dataset.py created (Competition format)"
+
+# =============================================================================
+# Airflow DAG
+# =============================================================================
+
+cat > airflow/dags/pipeline_dag.py << 'EOF'
+"""
+Home Credit Risk Pipeline — Main DAG
+Modelling : Kimball — Star Schema
+Stack     : AWS Glue (Bronze+Silver) → dbt (Gold/Snowflake)
+Schedule  : @daily
+"""
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.operators.bash import BashOperator
+from airflow.providers.slack.operators.slack_webhook import SlackWebhookOperator
+from datetime import datetime, timedelta
+
+default_args = {
+    'owner': 'raja-luqman',
+    'depends_on_past': False,
+    'start_date': datetime(2024, 1, 1),
+    'retries': 2,
+    'retry_delay': timedelta(minutes=5),
+}
+
+def slack_success(context):
+    SlackWebhookOperator(
+        task_id='slack_success',
+        slack_webhook_conn_id='slack_webhook',
+        message=f"✅ *home-credit-risk-pipeline* — Success | {context['ds']}",
+    ).execute(context)
+
+def slack_failure(context):
+    SlackWebhookOperator(
+        task_id='slack_failure',
+        slack_webhook_conn_id='slack_webhook',
+        message=f"❌ *home-credit-risk-pipeline* — FAILED: {context['task_instance'].task_id} | {context['ds']}",
+    ).execute(context)
+
+with DAG(
+    dag_id='home_credit_risk_pipeline',
+    default_args=default_args,
+    schedule_interval='@daily',
+    catchup=False,
+    on_success_callback=slack_success,
+    on_failure_callback=slack_failure,
+    tags=['banking', 'credit-risk', 'kimball'],
+) as dag:
+
+    bronze_ingest = PythonOperator(
+        task_id='bronze_ingest_7_tables',
+        python_callable=lambda: __import__('bronze.bronze_pipeline', fromlist=['']).run(),
+    )
+
+    silver_glue = PythonOperator(
+        task_id='silver_glue_transform',
+        python_callable=lambda: __import__('silver.trigger_glue_job', fromlist=['']).run(),
+    )
+
+    silver_dq = PythonOperator(
+        task_id='silver_dq_gx_check',
+        python_callable=lambda: __import__('data_quality.run_silver_suite', fromlist=['']).run(),
+    )
+
+    gold_run = BashOperator(
+        task_id='gold_dbt_run',
+        bash_command='dbt run --profiles-dir gold --project-dir gold',
+    )
+
+    gold_test = BashOperator(
+        task_id='gold_dbt_test',
+        bash_command='dbt test --profiles-dir gold --project-dir gold',
+    )
+
+    bronze_ingest >> silver_glue >> silver_dq >> gold_run >> gold_test
+EOF
+
+echo "✅ Airflow DAG created"
+
+# =============================================================================
+# dbt profiles.yml
+# =============================================================================
+
+cat > gold/profiles.yml << 'EOF'
+home-credit-risk-pipeline:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'SYSADMIN') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      schema: "{{ env_var('SNOWFLAKE_SCHEMA_DEV') }}"
+      threads: 4
+    staging:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'SYSADMIN') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      schema: "{{ env_var('SNOWFLAKE_SCHEMA_STAGING') }}"
+      threads: 4
+    prod:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', 'SYSADMIN') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      schema: "{{ env_var('SNOWFLAKE_SCHEMA_PROD') }}"
+      threads: 4
+EOF
+
+echo "✅ dbt profiles.yml created"
+
+# =============================================================================
+# Placeholder docs
+# =============================================================================
+
+cat > docs/BRD.md << 'EOF'
+# BRD: Home Credit Risk Pipeline
+> Status: DRAFT — Pending Phase 1 sign-off
+> Domain: Banking | Dataset: Home Credit Default Risk
+
+## Stakeholders
+| Stakeholder | Role | Data Need |
+|-------------|------|-----------|
+| Risk Team | Primary consumer | Default rate by segment |
+| Compliance | Audit | PII masking evidence, SCD audit trail |
+| Portfolio Mgmt | Secondary | Loan portfolio health KPIs |
+
+## Business Requirements
+1. Ingest 300k+ credit records dari 7 source tables
+2. Mask PII/quasi-identifiers (SHA-256) sebelum analytics layer
+3. Track applicant history via SCD Type 2
+4. Surface credit risk KPIs dalam Gold layer
+
+## KPIs
+| KPI | Formula | Frequency |
+|-----|---------|-----------|
+| Default Rate | COUNT(TARGET=1) / COUNT(*) | Daily |
+| Avg Credit Amount | AVG(AMT_CREDIT) per loan_type | Daily |
+| Bureau Delinquency Rate | Bureau bad / total bureau records | Daily |
+
+## Sign-off Gate
+| Agent | Status |
+|-------|--------|
+| BA | PENDING |
+| PO | PENDING |
+| PM | PENDING |
+| DQS | PENDING |
+EOF
+
+cat > docs/DRD.md << 'EOF'
+# DRD: Home Credit Risk Pipeline
+> Status: DRAFT — Pending Phase 2 sign-off
+
+## Source Tables (7 files)
+| File | Rows (approx) | Primary Key | Notes |
+|------|--------------|-------------|-------|
+| application_train.csv | 307,511 | SK_ID_CURR | Primary fact source |
+| bureau.csv | 1,716,428 | SK_ID_BUREAU | Credit bureau records |
+| bureau_balance.csv | 27,299,925 | SK_ID_BUREAU | Monthly bureau status |
+| previous_application.csv | 1,670,214 | SK_ID_PREV | Past loan applications |
+| installments_payments.csv | 13,605,401 | SK_ID_PREV | Payment history |
+| POS_CASH_balance.csv | 10,001,358 | SK_ID_PREV | POS loan balance |
+| credit_card_balance.csv | 3,840,312 | SK_ID_PREV | Credit card balance |
+
+## Known Data Issues
+| Issue | Table | Strategy |
+|-------|-------|----------|
+| XNA values | application_train (ORGANIZATION_TYPE) | Treat as NULL |
+| 365243 magic number | DAYS_EMPLOYED | Flag as anomaly, quarantine |
+| High cardinality | OCCUPATION_TYPE | NULL handling required |
+
+## Ingestion Pattern
+Static snapshot CSV — simulate CDC via MERGE upsert dalam Silver
+
+## Sign-off Gate
+| Agent | Status |
+|-------|--------|
+| BA | PENDING |
+| DA | PENDING |
+| SDE | PENDING |
+| DPE | PENDING |
+| DQS | PENDING |
+| PM | PENDING |
+EOF
+
+cat > docs/DATA_DICTIONARY.md << 'EOF'
+# Data Dictionary: Home Credit Risk Pipeline
+> Owner: DQS
+
+## Key Business Terms
+| Term | Definition |
+|------|-----------|
+| Default | TARGET=1 — applicant gagal bayar loan |
+| SK_ID_CURR | Unique applicant ID across all tables |
+| AMT_CREDIT | Total credit amount applied |
+| DAYS_BIRTH | Days since birth (negative integer) |
+| DAYS_EMPLOYED | Days since employment start (365243 = anomaly) |
+
+## PII / Quasi-Identifiers (SHA-256 masked dalam Silver)
+| Column | Risk | Mask Method |
+|--------|------|-------------|
+| DAYS_BIRTH | Age proxy | SHA-256 |
+| DAYS_EMPLOYED | Employment proxy | SHA-256 |
+EOF
+
+cat > docs/DATA_MODEL.md << 'EOF'
+# Data Model: Home Credit Risk Pipeline
+> Status: DRAFT — Pending Phase 3 sign-off
+> Paradigm: Kimball — Star Schema (LOCKED dari Claude.ai session)
+
+## Paradigm Decision
+Chosen  : Kimball — Star Schema
+Reason  : Analytics aggregation, AWS Glue manageable joins,
+          Snowflake cost predictable, resume entry alignment
+
+## Why Not OBT
+OBT rejected — bureau_balance 27M rows + installments 13M rows
+nested Arrays = memory risk. Kimball Star Schema = safer untuk free tier.
+
+## Fact Tables
+### fact_loan_application
+- Grain   : 1 row = 1 loan application (SK_ID_CURR) — LOCKED
+- Source  : application_train.csv
+- Pattern : Snapshot → MERGE upsert
+
+### fact_installment_payment
+- Grain   : 1 row = 1 installment payment record — LOCKED
+- Source  : installments_payments.csv
+- Pattern : Append + dedup
+
+### fact_bureau_credit
+- Grain   : 1 row = 1 bureau credit record per applicant — LOCKED
+- Source  : bureau.csv
+- Pattern : Snapshot → MERGE
+
+## Dimension Tables
+### dim_applicant — SCD TYPE 2 — LOCKED (resume proof)
+- Columns : applicant_id, income, employment, start_date, end_date, is_current
+- Source  : application_train.csv
+
+### dim_loan_type — SCD TYPE 1
+- Columns : loan_type_id, loan_type_name
+- Source  : NAME_CONTRACT_TYPE dari application_train
+
+### dim_credit_status — SCD TYPE 1
+- Columns : status_id, status_code, status_description
+- Source  : Credit bureau status codes
+
+## Sign-off Gate
+| Agent | Status |
+|-------|--------|
+| DA | PENDING |
+| DPE | PENDING |
+| SDE | PENDING |
+| AE | PENDING |
+| PM | PENDING |
+EOF
+
+cat > docs/ARCHITECTURE.md << 'EOF'
+# Architecture: Home Credit Risk Pipeline
+> Status: DRAFT — Pending Phase 3 sign-off
+
+## Stack
+| Layer | Tool | Notes |
+|-------|------|-------|
+| Storage | AWS S3 | Landing + Bronze + Silver |
+| Bronze | Delta Lake on S3 | ACID, time travel |
+| Silver | AWS Glue (Spark) | SHA-256 masking, transforms |
+| Gold | dbt Core + Snowflake | Kimball Star Schema |
+| Orchestration | Airflow standalone | localhost:8080 |
+| Quality | Great Expectations | Per layer |
+| BI | Power BI | Gold consumer |
+| Analytics | Databricks Serverless SQL | Query layer only |
+
+## CRITICAL Constraint
+Databricks = Serverless SQL ONLY. No PySpark. No Classic Compute.
+Silver transforms = AWS Glue (Spark) SAHAJA.
+
+## Data Flow
+application_train.csv (307k)  ─┐
+bureau.csv (1.7M)              ├─→ S3 Landing → Bronze (Delta)
+bureau_balance.csv (27M)       ├─→ AWS Glue Silver → SHA-256 mask
+installments_payments.csv      ├─→ dbt Gold → Snowflake → Power BI
+POS_CASH_balance.csv           ├─→
+credit_card_balance.csv        ─┘
+EOF
+
+cat > docs/PIPELINE_SPEC.md << 'EOF'
+# Pipeline SPEC: Home Credit Risk Pipeline
+> Status: DRAFT — Pending Phase 3 sign-off
+
+## Bronze Layer
+Input  : 7 CSV files dari S3 landing/ (atau local dev)
+Output : bronze.{table} (Delta Lake, partitioned by ingestion_date)
+Logic  : Store as-is + ingestion_ts, source_file, batch_id, env
+
+## Silver Layer (AWS Glue Spark Job)
+Input  : bronze.{table}
+Output : silver.{table}
+
+Transforms:
+1. DEDUP       : Keep latest ingestion_ts per SK_ID_CURR
+2. TYPE CAST   : DAYS_BIRTH → Integer, AMT_CREDIT → Float
+3. NULL HANDLE : DAYS_EMPLOYED = 365243 → NULL + flag
+                 ORGANIZATION_TYPE = 'XNA' → NULL
+4. PII MASK    : SHA-256(DAYS_BIRTH), SHA-256(DAYS_EMPLOYED)
+5. SCD PREP    : Add is_current, start_date, end_date untuk dim_applicant
+
+## Gold Layer (dbt)
+staging__applications.sql       → clean + cast
+staging__bureau.sql             → clean + cast
+int_applicant_scd2.sql          → SCD Type 2 logic
+int_credit_risk_features.sql    → join fact tables
+mart_loan_application.sql       → fact_loan_application
+mart_applicant_dim.sql          → dim_applicant (SCD2)
+mart_credit_risk_summary.sql    → KPI aggregations
+
+## KPIs
+default_rate            = COUNT(TARGET=1) / COUNT(*)
+avg_credit_amount       = AVG(AMT_CREDIT) GROUP BY loan_type
+bureau_delinquency_rate = SUM(bad_bureau_records) / COUNT(bureau_records)
+EOF
+
+cat > docs/DQD.md << 'EOF'
+# DQD: Home Credit Risk Pipeline
+> Status: DRAFT — Pending Phase 5 sign-off
+
+## Bronze Suite
+| Check | Rule | Severity |
+|-------|------|----------|
+| application_train row count | = 307,511 (staging) | CRITICAL |
+| ingestion_ts | NOT NULL | CRITICAL |
+| SK_ID_CURR | NOT NULL | CRITICAL |
+
+## Silver Suite
+| Check | Rule | Severity |
+|-------|------|----------|
+| DAYS_BIRTH masked | != original value | CRITICAL |
+| DAYS_EMPLOYED masked | != original value | CRITICAL |
+| DAYS_EMPLOYED anomaly | 365243 → NULL | HIGH |
+| SK_ID_CURR | UNIQUE per table | HIGH |
+
+## Gold Suite (dbt tests)
+| Check | Rule | Severity |
+|-------|------|----------|
+| fact_loan_application.SK_ID_CURR | NOT NULL, UNIQUE | CRITICAL |
+| dim_applicant.is_current | Only 1 True per applicant | CRITICAL |
+| FK: fact → dim_applicant | Referential integrity | CRITICAL |
+EOF
+
+cat > docs/OPS_RUNBOOK.md << 'EOF'
+# OPS Runbook: Home Credit Risk Pipeline
+> Status: DRAFT — Pending Phase 5 sign-off
+
+## Monitoring
+| Tool | Where |
+|------|-------|
+| Airflow | localhost:8080 |
+| AWS Glue | AWS Console → Glue → Jobs |
+| GX Report | docs/screenshots/gx_report.html |
+| Snowflake | Snowflake UI |
+
+## Scenarios
+
+### Bronze fail
+Check : S3 landing/ ada files?
+Fix   : Rerun download_dataset.py → Rerun bronze task
+
+### Glue Silver fail
+Check : AWS Glue → Jobs → Logs
+Fix 1 : Schema mismatch → update Silver job
+Fix 2 : DPU limit → optimize Glue job
+Rerun : Airflow → Clear silver_glue_transform → Trigger
+
+### dbt test fail
+Check : dbt test output
+Fix 1 : FK violation → check Silver quarantine
+Fix 2 : SCD is_current > 1 per applicant → check int_applicant_scd2.sql
+EOF
+
+echo "✅ Placeholder docs created (9 files)"
+
+# =============================================================================
+# ADR
+# =============================================================================
+
+cat > docs/ADR/ADR-001-kimball-star-schema.md << 'EOF'
+# ADR-001: Data Modelling Paradigm — Kimball Star Schema
+
+Status: Accepted
+Date  : 2026-05-12
+Owner : Data Architect + Data Platform Engineer
+
+## Context
+Home Credit dataset: 7 CSV files, 300k+ applicants, analytics use case.
+
+## Decision
+Paradigm: Kimball — Star Schema
+
+## Consequences
+(+) Standard analytics pattern — joins manageable dalam AWS Glue
+(+) Snowflake query cost predictable
+(+) SCD Type 2 directly proves resume bullet point
+(-) More joins vs OBT
+(-) bureau_balance (27M rows) needs careful partitioning
+
+## Alternatives Rejected
+OBT: rejected — bureau_balance 27M rows + installments 13M rows
+     nested Array/Struct = memory risk + Snowflake cost unpredictable
+EOF
+
+echo "✅ ADR-001 created"
+
+# =============================================================================
+# requirements.txt
+# =============================================================================
+
+cat > requirements.txt << 'EOF'
+# Core
+pandas==2.1.0
+python-dotenv==1.0.0
+delta-spark==3.0.0
+
+# Kaggle
+kaggle==1.6.14
+
+# AWS
+boto3==1.34.0
+awswrangler==3.5.0
+
+# Airflow
+apache-airflow==2.8.0
+apache-airflow-providers-slack==8.0.0
+apache-airflow-providers-amazon==8.0.0
+apache-airflow-providers-snowflake==5.0.0
+apache-airflow-providers-databricks==6.0.0
+
+# Snowflake
+snowflake-connector-python==3.6.0
+snowflake-sqlalchemy==1.5.0
+
+# dbt
+dbt-core==1.7.0
+dbt-snowflake==1.7.0
+
+# Quality
+great-expectations==0.18.0
+
+# Testing
+pytest==7.4.0
+pytest-cov==4.1.0
+
+# Utils
+PyYAML==6.0.1
+EOF
+
+echo "✅ requirements.txt created"
+
+# =============================================================================
+# infrastructure/credentials/SETUP_GUIDE.txt
+# =============================================================================
+
+cat > infrastructure/credentials/SETUP_GUIDE.txt << 'EOF'
+=== SETUP GUIDE — Home Credit Risk Pipeline ===
+Stack: AWS (S3+Glue) + Snowflake + Databricks Serverless SQL + Airflow + Kaggle
+
+STEP 1 — Copy env template
+  cp .env.example .env.dev
+  Fill in: KAGGLE_USERNAME, KAGGLE_KEY dulu
+
+STEP 2 — Kaggle Competition Download
+  Setup: https://www.kaggle.com/settings → API → Create New Token
+  ⚠️ WAJIB accept competition rules dulu:
+     https://www.kaggle.com/competitions/home-credit-default-risk → Join
+  
+  Download dev dataset:
+    python bronze/download_dataset.py --env dev
+  
+  ⚠️ CRITICAL: Competition dataset — BUKAN standard dataset
+  CORRECT: kaggle competitions download -c home-credit-default-risk
+  WRONG  : kaggle datasets download (akan 403)
+
+STEP 3 — AWS Setup
+  IAM → Create User → AmazonS3FullAccess + AWSGlueConsoleFullAccess
+  Create S3 buckets:
+    aws s3 mb s3://home-credit-risk-dev
+    aws s3 mb s3://home-credit-risk-staging
+  Fill .env.dev: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+
+STEP 4 — Databricks (Serverless SQL ONLY)
+  ⚠️ NO Classic Compute — Serverless SQL Warehouse sahaja
+  Settings → SQL Warehouses → Copy warehouse ID
+  Fill .env.dev: DATABRICKS_HOST, DATABRICKS_TOKEN, DATABRICKS_SQL_WAREHOUSE_ID
+
+STEP 5 — Snowflake
+  trial.snowflake.com → Register
+  Run: CREATE DATABASE HOME_CREDIT_RISK;
+  Fill .env.dev: SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PASSWORD
+
+STEP 6 — Airflow Standalone
+  pip install apache-airflow==2.8.0
+  export AIRFLOW_HOME=$(pwd)/airflow
+  airflow standalone
+  UI: http://localhost:8080
+
+STEP 7 — Verify All
+  source .env.dev
+  python -c "import kaggle; kaggle.api.authenticate(); print('Kaggle OK')"
+  python -c "import boto3; boto3.client('s3').list_buckets(); print('AWS OK')"
+  dbt debug --profiles-dir gold
+EOF
+
+echo "✅ SETUP_GUIDE.txt created"
+
+# =============================================================================
+# PROJECT_STATUS.md
+# =============================================================================
+
+cat > PROJECT_STATUS.md << 'EOF'
+# PROJECT_STATUS.md — home-credit-risk-pipeline
+Last updated : SETUP
+Current phase: Phase 0 — Setup Complete
+Modelling    : Kimball — Star Schema
+Cloud        : AWS (S3 + Glue)
+Databricks   : Serverless SQL ONLY (no PySpark jobs)
+
+## Phase Overview
+| Phase | Document | Status |
+|-------|----------|--------|
+| 0 | Setup | ✅ Done |
+| 1 | BRD | ⏳ |
+| 2 | DRD + Data Model Conceptual | ⏳ |
+| 3 | Architecture + SPEC + Data Model Logical | ⏳ |
+| 4a | CODE — local dev | ⏳ |
+| 4b | CODE — cloud promote | ⏳ |
+| 5 | DQD + OPS | ⏳ |
+
+## Next Step When Resuming
+1. Prompt: "Baca CLAUDE.md dan PROJECT_STATUS.md. Start Phase 1 — BRD."
+2. Terus execute — jangan explain semula
+
+## Pre-Locked Decisions (JANGAN reopen)
+| Decision | Value |
+|----------|-------|
+| Paradigm | Kimball — Star Schema |
+| fact_loan_application grain | 1 row = 1 application (SK_ID_CURR) |
+| fact_installment_payment grain | 1 row = 1 payment record |
+| fact_bureau_credit grain | 1 row = 1 bureau record |
+| dim_applicant | SCD Type 2 |
+| dim_loan_type | SCD Type 1 |
+| dim_credit_status | SCD Type 1 |
+| Cloud | AWS (S3 + Glue) |
+| Databricks | Serverless SQL ONLY |
+| PII masking | SHA-256 (DAYS_BIRTH, DAYS_EMPLOYED) |
+EOF
+
+echo "✅ PROJECT_STATUS.md created"
+
+# =============================================================================
+# COST_LOG.md
+# =============================================================================
+
+cat > COST_LOG.md << 'EOF'
+# Cost Log: home-credit-risk-pipeline
+> JANGAN commit
+
+## Token Usage
+| Phase | Sonnet | Haiku | Est. Cost |
+|-------|--------|-------|-----------|
+| 0 — Setup | - | - | $0.00 |
+| Total | | | $0.00 |
+
+## Cloud Usage
+| Service | Used | Limit | Notes |
+|---------|------|-------|-------|
+| S3 | 0 GB | 5 GB | 7 large CSVs — monitor |
+| Glue DPU | 0 | 1M | bureau_balance 27M rows = expensive |
+| Snowflake | $0 | $400 | Gold only |
+| Databricks | $0 | Trial | SQL queries only |
+EOF
+
+echo "✅ COST_LOG.md created"
+
+# =============================================================================
+# sign-offs/SIGN_OFF_LOG.md
+# =============================================================================
+
+cat > sign-offs/SIGN_OFF_LOG.md << 'EOF'
+# Sign-off Log: home-credit-risk-pipeline
+> JANGAN commit
+
+## Phase 1 — BRD
+Status: PENDING
+| Agent | Decision |
+|-------|----------|
+| BA | PENDING |
+| PO | PENDING |
+| PM | PENDING |
+| DQS | PENDING |
+
+## Phase 2 — DRD
+Status: PENDING
+| Agent | Decision |
+|-------|----------|
+| BA | PENDING |
+| DA | PENDING |
+| SDE | PENDING |
+| DPE | PENDING |
+| DQS | PENDING |
+| PM | PENDING |
+EOF
+
+echo "✅ sign-offs/SIGN_OFF_LOG.md created"
+
+# =============================================================================
+# docs/JOURNEY_LOG.md
+# =============================================================================
+
+cat > docs/JOURNEY_LOG.md << 'EOF'
+# Journey Log: home-credit-risk-pipeline
+> JANGAN commit
+
+[001] [2026-05-12 · Phase 0]
+DECISION  : Kimball Star Schema — 3 facts, 3 dims, SCD Type 2 untuk dim_applicant
+AGENTS    : DA propose, DPE validate (Claude.ai session)
+REASON    : Analytics aggregation, AWS Glue manageable, resume proof
+TRADEOFF  : More joins vs OBT, tapi OBT = memory risk 27M row tables
+OUTCOME   : Locked sebelum Claude Code — agents tak perlu reopen debate
+STAR_NOTE : Y — "designed Star Schema untuk 300k+ applicant dataset"
+LEARN     : Pre-lock decisions dalam Claude.ai jimat debate rounds dalam Claude Code
+EOF
+
+echo "✅ docs/JOURNEY_LOG.md created"
+
+# =============================================================================
+# docs/INTERVIEW_GUIDE.md — placeholder (JANGAN commit)
+# Playbook v3.1 require placeholder ni — generated content selepas Phase 5
+# =============================================================================
+
+cat > docs/INTERVIEW_GUIDE.md << 'EOF'
+# Interview Guide: home-credit-risk-pipeline
+> Generated selepas Phase 5 selesai.
+> Guna prompt: "Baca JOURNEY_LOG.md dan DATA_MODEL.md. Generate INTERVIEW_GUIDE.md"
+> JANGAN commit file ni ke GitHub.
+
+## Format Apabila Generated
+
+### 1. Quick Reference Numbers
+- Dataset size: 7 tables, 300k+ applicants, ~56M total rows
+- Pipeline: Bronze (7 CSVs) → Silver (Glue Spark) → Gold (dbt/Snowflake)
+- dbt models: [N] staging, [N] intermediate, [N] marts
+- GX expectations: [N] checks per layer
+- PII masking: SHA-256 on DAYS_BIRTH, DAYS_EMPLOYED
+
+### 2. STAR Stories (3 strongest)
+[Auto-generated dari JOURNEY_LOG.md selepas Phase 5]
+
+### 3. What Went Wrong + Lesson
+[Auto-generated]
+
+### 4. What I Would Do Differently
+[Auto-generated]
+
+### 5. Data Model Decision Logic
+- Kenapa Kimball bukan OBT?
+  → bureau_balance 27M rows + installments 13M rows nested Arrays = OOM risk
+  → Kimball Star Schema = safer, cost predictable, resume-aligned
+- Kenapa SCD Type 2 untuk dim_applicant?
+  → Resume bullet: "versioned audit trail for compliance requirements"
+  → Full history backfill-safe via Delta Lake time travel
+
+### 6. Architecture Decision Logic
+- Kenapa AWS Glue untuk Silver bukan Databricks?
+  → Databricks = Serverless SQL only, no Classic Compute
+  → Glue = managed Spark, pay-per-DPU, no cluster management
+
+### 7. Common Interview Q&A
+[Auto-generated]
+
+### 8. Questions to Ask Interviewer
+[Auto-generated]
+EOF
+
+echo "✅ docs/INTERVIEW_GUIDE.md placeholder created"
+
+# =============================================================================
+# HOW_IT_WORKS.txt
+# =============================================================================
+
+cat > HOW_IT_WORKS.txt << 'EOF'
+=== HOW THIS PROJECT WORKS ===
+(JANGAN COMMIT)
+
+Goal: Realisasikan resume entry "Banking Credit Risk Pipeline"
+      dengan actual code + GitHub evidence.
+
+Resume bullets to prove:
+1. "300k+ records from 7 disparate source tables" → Bronze 7-table ingestion
+2. "GX + PII masking SHA-256" → Silver Glue job + GX suite
+3. "SCD Type 2 for applicant dimensions" → dim_applicant dalam Gold
+
+Stack (locked):
+  Ingest  : Python + Kaggle Competition API
+  Bronze  : Delta Lake on S3
+  Silver  : AWS Glue (Spark) — SHA-256 masking here
+  Gold    : dbt Core + Snowflake — Kimball Star Schema
+  Orch    : Airflow standalone
+  Quality : Great Expectations
+  BI      : Power BI
+  Query   : Databricks Serverless SQL (no Spark!)
+
+TO RESUME:
+  Baca PROJECT_STATUS.md → "Next Step When Resuming"
+  Claude Code: "Baca CLAUDE.md dan PROJECT_STATUS.md. Start Phase 1 — BRD."
+EOF
+
+echo "✅ HOW_IT_WORKS.txt created"
+
+# =============================================================================
+# README.md
+# =============================================================================
+
+cat > README.md << 'EOF'
+# Home Credit Risk Pipeline
+
+Banking credit risk data engineering portfolio pipeline.
+
+**Resume Entry:** Engineered scalable ingestion pipeline integrating 300k+ credit records
+from 7 disparate source tables with GX data quality gating, SHA-256 PII masking,
+and SCD Type 2 historical tracking.
+
+## Tech Stack
+| Layer | Tool |
+|-------|------|
+| Storage | AWS S3 + Delta Lake |
+| Silver | AWS Glue (Spark) |
+| Gold | dbt Core + Snowflake |
+| Orchestration | Apache Airflow standalone |
+| Quality | Great Expectations |
+| BI | Power BI |
+
+## Data Model — Kimball Star Schema
+```
+fact_loan_application    <- grain: 1 row = 1 application
+fact_installment_payment <- grain: 1 row = 1 payment
+fact_bureau_credit       <- grain: 1 row = 1 bureau record
+dim_applicant            <- SCD Type 2
+dim_loan_type            <- SCD Type 1
+dim_credit_status        <- SCD Type 1
+```
+
+## Source Tables (7 files)
+| File | Rows |
+|------|------|
+| application_train.csv | 307,511 |
+| bureau.csv | 1,716,428 |
+| bureau_balance.csv | 27,299,925 |
+| previous_application.csv | 1,670,214 |
+| installments_payments.csv | 13,605,401 |
+| POS_CASH_balance.csv | 10,001,358 |
+| credit_card_balance.csv | 3,840,312 |
+
+## Pipeline Evidence
+*(Updated selepas Phase 4b)*
+
+### Airflow DAG
+![airflow](docs/screenshots/airflow_dag_success.png)
+
+### GX Validation Report
+![gx](docs/screenshots/gx_validation_report.png)
+
+### Snowflake Gold Layer
+![snowflake](docs/screenshots/snowflake_gold_table.png)
+
+### Slack Alert
+![slack](docs/screenshots/slack_alert_success.png)
+
+## Progress
+| Phase | Status |
+|-------|--------|
+| 0 Setup | ✅ |
+| 1 BRD | ⏳ |
+| 2 DRD | ⏳ |
+| 3 Architecture | ⏳ |
+| 4 Code | ⏳ |
+| 5 DQD + OPS | ⏳ |
+EOF
+
+echo "✅ README.md created"
+
+# =============================================================================
+# Git init + initial commit
+# =============================================================================
+
+git init
+
+git add \
+  .gitignore \
+  .env.example \
+  .mcp.json \
+  docs/BRD.md \
+  docs/DRD.md \
+  docs/DATA_DICTIONARY.md \
+  docs/DATA_MODEL.md \
+  docs/PIPELINE_SPEC.md \
+  docs/ARCHITECTURE.md \
+  docs/DQD.md \
+  docs/OPS_RUNBOOK.md \
+  docs/ADR/ \
+  airflow/dags/pipeline_dag.py \
+  bronze/download_dataset.py \
+  gold/profiles.yml \
+  README.md \
+  requirements.txt \
+  infrastructure/credentials/SETUP_GUIDE.txt
+
+git commit -m "[Phase 0] home-credit-risk-pipeline — Banking credit risk | Kimball | AWS"
+
+# =============================================================================
+# DONE
+# =============================================================================
+
+echo ""
+echo "=========================================="
+echo "✅ home-credit-risk-pipeline — scaffold complete!"
+echo "=========================================="
+echo ""
+echo "Modelling : Kimball — Star Schema"
+echo "Cloud     : AWS (S3 + Glue)"
+echo "Databricks: Serverless SQL ONLY"
+echo ""
+echo "⚠️  BEFORE running download_dataset.py:"
+echo "   Accept competition rules dulu:"
+echo "   kaggle.com/competitions/home-credit-default-risk → Join"
+echo ""
+echo "Next steps:"
+echo "  1. Letak CLAUDE.md dalam folder ni"
+echo "  2. cp .env.example .env.dev"
+echo "  3. Fill in KAGGLE_USERNAME + KAGGLE_KEY dalam .env.dev"
+echo "  4. python bronze/download_dataset.py --env dev"
+echo "  5. code ."
+echo "  6. Claude Code: 'Baca CLAUDE.md dan PROJECT_STATUS.md. Start Phase 1 — BRD.'"
+echo ""
+</file>
+
+</files>

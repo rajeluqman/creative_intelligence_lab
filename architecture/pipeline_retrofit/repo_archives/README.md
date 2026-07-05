@@ -12,10 +12,14 @@
 
 | Archive | Repo | Branch | Commit (at archive time) |
 |---|---|---|---|
-| `home-credit-pipeline-porting.tar.gz` | `rajeluqman/home-credit-pipeline` | `framework/governance-retrofit` | `bef4714` |
-| `olist-ecommerce-pipeline-porting.tar.gz` | `rajeluqman/olist-ecommerce-pipeline` | `framework/governance-retrofit` | `f17e225` |
-| `paysim-fraud-pipeline-porting.tar.gz` | `rajeluqman/paysim-fraud-pipeline` | `framework/governance-retrofit` | `6a8aa10` |
-| `Volve-Sensor-Production-Analytics-Pipeline-porting.tar.gz` | `rajeluqman/Volve-Sensor-Production-Analytics-Pipeline` | `framework/governance-retrofit` | `08a12dc` |
+| `home-credit-pipeline-porting.tar.gz` | `rajeluqman/home-credit-pipeline` | `framework/governance-retrofit` | `bdc8966` |
+| `olist-ecommerce-pipeline-porting.tar.gz` | `rajeluqman/olist-ecommerce-pipeline` | `framework/governance-retrofit` | `e3a48cb` |
+| `paysim-fraud-pipeline-porting.tar.gz` | `rajeluqman/paysim-fraud-pipeline` | `framework/governance-retrofit` | `7c60ccb` |
+| `Volve-Sensor-Production-Analytics-Pipeline-porting.tar.gz` | `rajeluqman/Volve-Sensor-Production-Analytics-Pipeline` | `framework/governance-retrofit` | `b6c99eb` |
+
+> **Re-archived 2026-06-29** after the week-1-readability doc pass (Purpose + Business-Questions
+> + Results&Evidence sections in each README + Confluence landing page). Commits above supersede
+> the original retrofit commits `bef4714`/`f17e225`/`6a8aa10`/`08a12dc`.
 
 ## How to restore + push (Opus's job, per `PROJECT_STATUS.md` "Next action")
 

@@ -18,6 +18,11 @@ Usage:
     python scripts/sync_docs_to_confluence.py --dry-run    # render + list, no API calls, no creds
     python scripts/sync_docs_to_confluence.py --prune       # also DELETE live pages no longer in the
                                                             # curated set (e.g. old per-ADR pages)
+    python scripts/sync_docs_to_confluence.py --homepage    # also overwrite the space homepage
+                                                            # (CONFLUENCE_PARENT_PAGE_ID) with a
+                                                            # hyperlinked landing page — run AFTER a
+                                                            # normal sync so the pages it links to
+                                                            # already exist and have real page IDs
 """
 from __future__ import annotations
 
@@ -85,6 +90,105 @@ PUBLISH_SET: list[tuple[str, str | None]] = [
 def _page_title(rel_path: str, name: str | None) -> str:
     stem = name if name is not None else Path(rel_path).stem
     return f"{PROJECT_PREFIX} — {stem}"
+
+
+# Homepage link sections, in the order a newcomer should read them. Each entry references a page
+# title from PUBLISH_SET above (so the link target always matches a page that's actually published —
+# no hand-typed titles to drift out of sync). One short line of "why click this" per link, written
+# for a newcomer landing on the space root, not a repo contributor.
+HOMEPAGE_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
+    ("Start here", [
+        ("Start Here", "What this project is, the five hard design problems, and the reading order below."),
+    ]),
+    ("Architecture", [
+        ("Architecture Decisions", "Why DuckDB not Spark, content-hash identity, graph-over-star — the ADRs that matter."),
+        ("Pipeline Documentation", "The flow: Drive source → S3 landing → Silver → Gold marts."),
+        ("Data Contract", "Schema, types, mandatory fields, lineage/identity rules."),
+        ("DATA_DICTIONARY", "What every column in the marts means."),
+    ]),
+    ("Operate", [
+        ("Runbook", "How to rerun the pipeline on failure, with real cited incidents."),
+        ("Deployment Guide", "How CI/CD and Snowflake serving actually deploy."),
+        ("Known Issues", "Bugs/gaps not yet fixed."),
+        ("Incident Postmortem", "Root cause records for production issues."),
+    ]),
+    ("Releases", [
+        ("Release Notes", "What changed, most recent first."),
+    ]),
+]
+
+
+def _homepage_html(base_url: str, space_key: str, link_ids: dict[str, str]) -> str:
+    """Build the space-homepage body: an elevator pitch + a hyperlinked nav, like a real team wiki
+    landing page. `link_ids` maps page title (without the PROJECT_PREFIX) -> live Confluence page id,
+    so every link points at a page that actually exists today, not a guessed URL."""
+    parts = [
+        "<h1>Creative Intelligence Pipeline</h1>",
+        "<p><em>From raw ad footage to a searchable creative feature store.</em></p>",
+        "<p>Clients hand over a Google Drive folder full of near-duplicate ad video — the same campaign "
+        "shot and re-cut a dozen times. This pipeline reads every clip with an LLM and turns it into "
+        "structured, searchable data: every line of dialogue, the hook, the theme, the sentiment, and "
+        "a 1–5 reuse score per clip (can this moment stand alone, or does it need the rest of the ad "
+        "around it?).</p>",
+        "<h2>How a video becomes a queryable row</h2>",
+        "<ul>"
+        "<li><strong>Landing (raw)</strong> — the client's video lands in S3 untouched, identified by a "
+        "content hash, not a filename. Upload the same near-duplicate clip twice and it's recognized "
+        "as the same asset, not reprocessed.</li>"
+        "<li><strong>Bronze</strong> — an LLM (Gemini) watches each video once and its response is "
+        "saved word-for-word. Kept verbatim so the data can be re-parsed later without paying to "
+        "re-watch the video.</li>"
+        "<li><strong>Silver</strong> — that raw response is split into one row per semantic chunk (a "
+        "dialogue beat or scene, not a fixed 10-second slice), with filler removed and timestamps "
+        "normalized.</li>"
+        "<li><strong>Gold (marts)</strong> — the chunks become the actual feature store: fact tables "
+        "per chunk, plus a graph of which chunks can coherently follow which — so a chunk doesn't get "
+        "stitched next to one that breaks the message.</li>"
+        "</ul>",
+        "<p><strong>How marketing actually uses it:</strong> nobody touches S3 or parquet directly. "
+        "Snowflake reads the Gold tables and serves them through native semantic (vector) search and "
+        "Power BI — so \"find me frustrated-customer clips that stand alone\" is a search query or "
+        "dashboard filter, not a script someone runs.</p>",
+        "<p>This page and the docs below are generated from the project's GitHub repository and "
+        "kept in sync automatically. Please make edits there, not here — anything changed directly "
+        "on this page will be overwritten by the next sync.</p>",
+    ]
+    for section, links in HOMEPAGE_SECTIONS:
+        parts.append(f"<h2>{section}</h2>")
+        parts.append("<ul>")
+        for title, blurb in links:
+            page_id = link_ids.get(title)
+            if page_id is None:
+                parts.append(f"<li>{title} — <em>not yet published, run a sync first</em></li>")
+                continue
+            url = f"{base_url}/spaces/{space_key}/pages/{page_id}"
+            parts.append(f'<li><a href="{url}">{title}</a> — {blurb}</li>')
+        parts.append("</ul>")
+    return "\n".join(parts)
+
+
+def _update_homepage(base_url: str, auth, parent_id: str, html: str) -> None:
+    resp = requests.get(
+        f"{base_url}/rest/api/content/{parent_id}",
+        params={"expand": "version"},
+        auth=auth,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    page = resp.json()
+    next_version = page["version"]["number"] + 1
+    resp = requests.put(
+        f"{base_url}/rest/api/content/{parent_id}",
+        auth=auth,
+        json={
+            "type": "page",
+            "title": page["title"],
+            "version": {"number": next_version},
+            "body": {"storage": {"value": html, "representation": "storage"}},
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
 
 
 def _published() -> list[tuple[Path, str]]:
@@ -183,12 +287,26 @@ def _update_page(base_url: str, auth, page_id: str, next_version: int, title: st
     resp.raise_for_status()
 
 
+def _set_space_homepage(base_url: str, auth, space_key: str, page_id: str) -> None:
+    """Point the SPACE's homepage pointer at page_id. This is a separate property on the space
+    object (`space.homepage`), not part of the page's own content — writing the page body alone
+    (as `_update_homepage` does) does not make Confluence treat it as the space's landing page.
+    Without this call the space keeps showing "This space doesn't have a homepage"."""
+    resp = requests.put(
+        f"{base_url}/rest/api/space/{space_key}",
+        auth=auth,
+        json={"homepage": {"id": page_id}},
+        timeout=30,
+    )
+    resp.raise_for_status()
+
+
 def _delete_page(base_url: str, auth, page_id: str) -> None:
     resp = requests.delete(f"{base_url}/rest/api/content/{page_id}", auth=auth, timeout=30)
     resp.raise_for_status()
 
 
-def sync(env: dict[str, str], dry_run: bool, prune: bool) -> None:
+def sync(env: dict[str, str], dry_run: bool, prune: bool, homepage: bool) -> None:
     docs = _published()
     keep_titles = {title for _, title in docs}
 
@@ -207,6 +325,11 @@ def sync(env: dict[str, str], dry_run: bool, prune: bool) -> None:
               f"(run with --prune to delete whichever of these are actually live in Confluence):")
         for t in dropped:
             print(f"  - {t}")
+        if homepage:
+            link_ids = {title: "PLACEHOLDER_ID" for section in HOMEPAGE_SECTIONS for title, _ in section[1]}
+            html = _homepage_html("https://example.atlassian.net/wiki", "CI", link_ids)
+            print(f"\n[dry-run] would overwrite the space homepage ({len(html)} chars):")
+            print(html)
         return
 
     _assert_env(env)
@@ -215,6 +338,7 @@ def sync(env: dict[str, str], dry_run: bool, prune: bool) -> None:
     space_key = env["CONFLUENCE_SPACE_KEY"]
     parent_id = env["CONFLUENCE_PARENT_PAGE_ID"]
 
+    page_ids: dict[str, str] = {}
     for path, title in docs:
         html = _to_confluence_storage_html(path.read_text())
         existing = _find_existing_page(base_url, auth, space_key, title)
@@ -222,9 +346,24 @@ def sync(env: dict[str, str], dry_run: bool, prune: bool) -> None:
             next_version = existing["version"]["number"] + 1
             _update_page(base_url, auth, existing["id"], next_version, title, html)
             print(f"updated: {title} (v{next_version})")
+            page_ids[title] = existing["id"]
         else:
             page_id = _create_page(base_url, auth, space_key, parent_id, title, html)
             print(f"created: {title} (id={page_id})")
+            page_ids[title] = page_id
+
+    if homepage:
+        link_ids = {
+            stem: page_ids.get(f"{PROJECT_PREFIX} — {stem}")
+            for section in HOMEPAGE_SECTIONS for stem, _ in section[1]
+        }
+        missing = [stem for stem, pid in link_ids.items() if pid is None]
+        if missing:
+            sys.exit(f"sync_docs_to_confluence: --homepage references unpublished page(s): {missing}")
+        html = _homepage_html(base_url, space_key, link_ids)
+        _update_homepage(base_url, auth, parent_id, html)
+        _set_space_homepage(base_url, auth, space_key, parent_id)
+        print(f"updated: homepage ({parent_id}), space homepage pointer set to {parent_id}")
 
     if prune:
         live = _list_project_pages(base_url, auth, space_key)
@@ -246,5 +385,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--prune", action="store_true", help="DELETE live pages (PROJECT_PREFIX) no longer in the curated set"
     )
+    parser.add_argument(
+        "--homepage", action="store_true",
+        help="also overwrite the space homepage (CONFLUENCE_PARENT_PAGE_ID) with a hyperlinked landing page"
+    )
     args = parser.parse_args()
-    sync(dict(os.environ), args.dry_run, args.prune)
+    sync(dict(os.environ), args.dry_run, args.prune, args.homepage)

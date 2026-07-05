@@ -1,0 +1,5087 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+airflow/
+  dags/
+    operators/
+      __init__.py
+      databricks_sql_operator.py
+    HOW_IT_WORKS.txt
+    volve_daily_pipeline.py
+  MWAA_SETUP.txt
+  requirements.txt
+bronze/
+  glue_jobs/
+    HOW_IT_WORKS.txt
+  bronze_production.py
+  bronze_witsml.py
+  run_bronze.py
+data_quality/
+  HOW_IT_WORKS.txt
+docs/
+  ARCHITECTURE.md
+  BRD.md
+  DQD.md
+  DRD.md
+  OPS_RUNBOOK.md
+  PIPELINE_SPEC.md
+gold/
+  notebooks/
+    DATABRICKS_SETUP.txt
+    HOW_IT_WORKS.txt
+  gold_ml_features.py
+  gold_production_daily.py
+  run_gold.py
+infrastructure/
+  docker-compose.yml
+ingestion/
+  nifi/
+    DASHBOARD_SETUP.txt
+    HOW_IT_WORKS.txt
+ml/
+  training/
+    HOW_IT_WORKS.txt
+    MLFLOW_SETUP.txt
+  run_ml.py
+  score_models.py
+  train_anomaly_detection.py
+  train_drilling_efficiency.py
+  train_pressure_prediction.py
+silver/
+  notebooks/
+    DATABRICKS_SETUP.txt
+    HOW_IT_WORKS.txt
+  run_silver.py
+  silver_production.py
+  silver_trajectory.py
+snowflake/
+  create_views.py
+  load_snowflake.py
+  requirements.txt
+  run_snowflake.py
+  setup_mcp.sql
+  setup_snowflake.py
+tests/
+  HOW_IT_WORKS.txt
+.env.example
+.gitignore
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="airflow/dags/operators/__init__.py">
+
+</file>
+
+<file path="airflow/dags/operators/databricks_sql_operator.py">
+"""
+Custom Airflow operators for the Volve pipeline.
+
+DatabricksSQLScriptOperator — runs a local Python script that connects to Databricks SQL Warehouse.
+DatabricksSQLQueryOperator  — executes SQL directly against Databricks SQL Warehouse.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from typing import Sequence
+
+from airflow.exceptions import AirflowException
+from airflow.models import BaseOperator
+
+
+class DatabricksSQLScriptOperator(BaseOperator):
+    """
+    Runs a Python script as a subprocess.
+    The script is expected to connect to Databricks SQL Warehouse using env vars
+    (DATABRICKS_HOST, DATABRICKS_HTTP_PATH, DATABRICKS_TOKEN).
+    Raises AirflowException on non-zero exit.
+    """
+
+    template_fields: Sequence[str] = ("script_path", "script_args")
+
+    def __init__(
+        self,
+        *,
+        script_path: str,
+        script_args: list[str] | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.script_path = script_path
+        self.script_args = script_args or []
+
+    def execute(self, context):
+        cmd = [sys.executable, self.script_path] + self.script_args
+        self.log.info("Running: %s", " ".join(cmd))
+
+        result = subprocess.run(cmd, env={**os.environ})
+
+        if result.returncode != 0:
+            raise AirflowException(
+                f"Script {self.script_path} exited with code {result.returncode}"
+            )
+
+
+class DatabricksSQLQueryOperator(BaseOperator):
+    """
+    Executes one or more SQL statements directly against Databricks SQL Warehouse.
+
+    When validation_mode=True, each statement must return rows with columns
+    (check_name STRING, passed BOOLEAN). Raises AirflowException on any failed check.
+    """
+
+    template_fields: Sequence[str] = ("sql",)
+
+    def __init__(
+        self,
+        *,
+        sql: str | list[str],
+        validation_mode: bool = False,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.sql = [sql] if isinstance(sql, str) else sql
+        self.validation_mode = validation_mode
+
+    def execute(self, context):
+        from databricks import sql as dbsql
+        from dotenv import load_dotenv
+
+        load_dotenv()
+        host      = os.environ["DATABRICKS_HOST"].replace("https://", "")
+        http_path = os.environ["DATABRICKS_HTTP_PATH"]
+        token     = os.environ["DATABRICKS_TOKEN"]
+
+        with dbsql.connect(server_hostname=host, http_path=http_path, access_token=token) as conn:
+            for statement in self.sql:
+                self.log.info("Executing SQL: %s", statement.strip()[:300])
+                with conn.cursor() as cur:
+                    cur.execute(statement)
+                    if self.validation_mode:
+                        rows = cur.fetchall()
+                        failed = []
+                        for row in rows:
+                            check_name, passed = row[0], row[1]
+                            if passed:
+                                self.log.info("DQ check PASSED: %s", check_name)
+                            else:
+                                self.log.error("DQ check FAILED: %s", check_name)
+                                failed.append(check_name)
+                        if failed:
+                            raise AirflowException(
+                                f"DQ gate blocked — failed checks: {', '.join(failed)}"
+                            )
+</file>
+
+<file path="airflow/dags/HOW_IT_WORKS.txt">
+=== AIRFLOW ORCHESTRATION ===
+
+TUJUAN:
+  Orchestrate seluruh pipeline dalam 10-task DAG.
+
+DAGs:
+  volve_daily_pipeline.py    - Main pipeline DAG
+  volve_streaming_monitor.py - Anomaly monitoring DAG
+
+SCHEDULE: 0 2 * * * (2 AM daily)
+
+10-TASK ORDER:
+  1. check_source_files
+  2. run_glue_bronze_production  (parallel with 3)
+  3. run_glue_bronze_witsml      (parallel with 2)
+  4. run_silver_production       (parallel with 5)
+  5. run_silver_witsml           (parallel with 4)
+  6. check_dq_silver             ← DQ GATE
+  7. run_gold_production         (parallel with 8)
+  8. run_gold_features           (parallel with 7)
+  9. run_ml_scoring
+  10. send_daily_report
+
+CARA TRIGGER MANUAL:
+  Airflow UI → DAG → Trigger ▶
+  ATAU: airflow dags trigger volve_daily_pipeline
+</file>
+
+<file path="airflow/dags/volve_daily_pipeline.py">
+"""
+Volve Daily Pipeline DAG
+10-task orchestration for the Volve Sensor & Production Analytics Pipeline.
+Schedule : 0 2 * * * (2 AM daily)
+
+Dependency chain:
+  t1 → [t2, t3] → [t4, t5] → t6 → [t7, t8] → t9 → t10
+
+Architecture note: pipeline runs scripts locally (Codespaces) which connect to
+Databricks SQL Warehouse (claudecatalog). No AWS Glue — all transforms via Databricks SQL.
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+
+from operators.databricks_sql_operator import (
+    DatabricksSQLQueryOperator,
+    DatabricksSQLScriptOperator,
+)
+
+PROJECT_ROOT = Path(
+    os.environ.get("VOLVE_PROJECT_ROOT", Path(__file__).parent.parent.parent)
+)
+
+DEFAULT_ARGS = {
+    "owner":            "volve-pipeline",
+    "retries":          1,
+    "retry_delay":      timedelta(minutes=5),
+    "email_on_failure": False,
+    "email_on_retry":   False,
+}
+
+# --- SQL: Task 1 — verify source volume and catalog schemas exist ---
+SOURCE_CHECK_SQL = [
+    "CREATE SCHEMA IF NOT EXISTS claudecatalog.bronze",
+    "CREATE SCHEMA IF NOT EXISTS claudecatalog.silver",
+    "CREATE SCHEMA IF NOT EXISTS claudecatalog.gold",
+    # Verify source volume is reachable
+    """
+    SELECT COUNT(*) AS file_count
+    FROM read_files(
+        '/Volumes/equinor_asa_volve_data_village/public/volve/Production_data/',
+        format => 'binaryFile'
+    )
+    """,
+]
+
+# --- SQL: Task 6 — DQ gate checks against silver tables ---
+# Each SELECT returns (check_name STRING, passed BOOLEAN).
+DQ_CHECKS_SQL = """
+SELECT check_name, passed FROM (
+    SELECT 'silver_prod_row_count'    AS check_name,
+           COUNT(*) > 100             AS passed
+    FROM   claudecatalog.silver.cleaned_production
+
+    UNION ALL
+
+    SELECT 'silver_prod_dateprd_null' AS check_name,
+           (SUM(CASE WHEN DATEPRD IS NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*)) < 5
+                                      AS passed
+    FROM   claudecatalog.silver.cleaned_production
+
+    UNION ALL
+
+    SELECT 'silver_prod_well_null'    AS check_name,
+           (SUM(CASE WHEN well_id IS NULL THEN 1 ELSE 0 END) * 100.0 / COUNT(*)) < 5
+                                      AS passed
+    FROM   claudecatalog.silver.cleaned_production
+
+    UNION ALL
+
+    SELECT 'silver_prod_water_cut_range' AS check_name,
+           (SUM(CASE WHEN water_cut_pct < 0 OR water_cut_pct > 100 THEN 1 ELSE 0 END)
+            * 100.0 / NULLIF(COUNT(*), 0)) < 10
+                                      AS passed
+    FROM   claudecatalog.silver.cleaned_production
+
+    UNION ALL
+
+    SELECT 'silver_traj_row_count'    AS check_name,
+           COUNT(*) > 0               AS passed
+    FROM   claudecatalog.silver.cleaned_trajectory
+)
+"""
+
+
+def _send_daily_report(**context):
+    """Query Gold tables and print a summary report. Never raises — report is informational."""
+    import os
+
+    from databricks import sql as dbsql
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    host      = os.environ["DATABRICKS_HOST"].replace("https://", "")
+    http_path = os.environ["DATABRICKS_HTTP_PATH"]
+    token     = os.environ["DATABRICKS_TOKEN"]
+
+    production_sql = """
+    SELECT
+        well_id,
+        MAX(DATEPRD)                                                         AS last_date,
+        ROUND(SUM(BORE_OIL_VOL), 0)                                          AS total_oil_sm3,
+        ROUND(SUM(BORE_GAS_VOL) / 1e6, 3)                                   AS total_gas_msm3,
+        ROUND(AVG(water_cut_7d_avg), 2)                                      AS avg_water_cut_7d,
+        SUM(CASE WHEN is_anomaly_pressure = true THEN 1 ELSE 0 END)          AS pressure_anomalies
+    FROM claudecatalog.gold.production_daily
+    WHERE DATEPRD >= DATE_SUB(CURRENT_DATE(), 7)
+    GROUP BY well_id
+    ORDER BY well_id
+    """
+
+    anomaly_sql = """
+    SELECT COALESCE(COUNT(*), 0) AS total_anomalies
+    FROM claudecatalog.gold.ml_predictions
+    WHERE pred_is_anomaly = 1
+      AND DATEPRD >= DATE_SUB(CURRENT_DATE(), 1)
+    """
+
+    run_date = context.get("ds", str(datetime.utcnow().date()))
+    print("\n" + "=" * 62)
+    print(f"  VOLVE DAILY REPORT — {run_date}")
+    print("=" * 62)
+
+    try:
+        with dbsql.connect(
+            server_hostname=host, http_path=http_path, access_token=token
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute(production_sql)
+                rows = cur.fetchall()
+                cols = [d[0] for d in cur.description]
+
+            print("\n  Production Summary (last 7 days):")
+            header = f"  {'Well':<8} {'Last Date':<12} {'Oil (sm³)':<12} {'Gas (Msm³)':<12} {'WaterCut%':<11} {'Alerts'}"
+            print(header)
+            print("  " + "-" * 62)
+            for row in rows:
+                r = dict(zip(cols, row))
+                print(
+                    f"  {str(r['well_id']):<8} "
+                    f"{str(r['last_date']):<12} "
+                    f"{str(r['total_oil_sm3']):<12} "
+                    f"{str(r['total_gas_msm3']):<12} "
+                    f"{str(r['avg_water_cut_7d']):<11} "
+                    f"{r['pressure_anomalies']}"
+                )
+
+            with conn.cursor() as cur:
+                cur.execute(anomaly_sql)
+                anomaly_count = cur.fetchone()[0]
+
+            print(f"\n  ML Anomalies (last 24h) : {anomaly_count}")
+
+    except Exception as e:
+        print(f"\n  [WARN] Report query failed: {e}")
+
+    print("=" * 62 + "\n")
+
+
+with DAG(
+    dag_id="volve_daily_pipeline",
+    description="Volve Sensor & Production Analytics — 10-task daily pipeline",
+    schedule="0 2 * * *",
+    start_date=datetime(2024, 1, 1),
+    catchup=False,
+    default_args=DEFAULT_ARGS,
+    tags=["volve", "oil-gas", "databricks"],
+    max_active_runs=1,
+) as dag:
+
+    # Task 1 — verify source volume and schemas
+    t1_check_source = DatabricksSQLQueryOperator(
+        task_id="check_source_files",
+        sql=SOURCE_CHECK_SQL,
+    )
+
+    # Tasks 2 & 3 — Bronze (parallel)
+    t2_bronze_prod = DatabricksSQLScriptOperator(
+        task_id="run_glue_bronze_production",
+        script_path=str(PROJECT_ROOT / "bronze" / "bronze_production.py"),
+    )
+
+    t3_bronze_witsml = DatabricksSQLScriptOperator(
+        task_id="run_glue_bronze_witsml",
+        script_path=str(PROJECT_ROOT / "bronze" / "bronze_witsml.py"),
+    )
+
+    # Tasks 4 & 5 — Silver (parallel)
+    t4_silver_prod = DatabricksSQLScriptOperator(
+        task_id="run_silver_production",
+        script_path=str(PROJECT_ROOT / "silver" / "silver_production.py"),
+    )
+
+    t5_silver_witsml = DatabricksSQLScriptOperator(
+        task_id="run_silver_witsml",
+        script_path=str(PROJECT_ROOT / "silver" / "silver_trajectory.py"),
+    )
+
+    # Task 6 — DQ gate (blocks downstream on failure)
+    t6_dq_gate = DatabricksSQLQueryOperator(
+        task_id="check_dq_silver",
+        sql=DQ_CHECKS_SQL,
+        validation_mode=True,
+    )
+
+    # Tasks 7 & 8 — Gold (parallel)
+    t7_gold_prod = DatabricksSQLScriptOperator(
+        task_id="run_gold_production",
+        script_path=str(PROJECT_ROOT / "gold" / "gold_production_daily.py"),
+    )
+
+    t8_gold_features = DatabricksSQLScriptOperator(
+        task_id="run_gold_features",
+        script_path=str(PROJECT_ROOT / "gold" / "gold_ml_features.py"),
+    )
+
+    # Task 9 — ML batch scoring (scores last 30 days from feature store)
+    t9_ml_scoring = DatabricksSQLScriptOperator(
+        task_id="run_ml_scoring",
+        script_path=str(PROJECT_ROOT / "ml" / "score_models.py"),
+        script_args=["--days", "30"],
+    )
+
+    # Task 10 — Daily summary report
+    t10_report = PythonOperator(
+        task_id="send_daily_report",
+        python_callable=_send_daily_report,
+    )
+
+    # Dependency chain
+    # list >> list is not supported in Airflow 2.x — fan-out each upstream manually
+    t1_check_source >> [t2_bronze_prod, t3_bronze_witsml]
+    t2_bronze_prod >> [t4_silver_prod, t5_silver_witsml]
+    t3_bronze_witsml >> [t4_silver_prod, t5_silver_witsml]
+    [t4_silver_prod, t5_silver_witsml] >> t6_dq_gate
+    t6_dq_gate >> [t7_gold_prod, t8_gold_features]
+    [t7_gold_prod, t8_gold_features] >> t9_ml_scoring
+    t9_ml_scoring >> t10_report
+</file>
+
+<file path="airflow/MWAA_SETUP.txt">
+=== AIRFLOW SETUP — Docker (portfolio) ===
+
+NOTE: Guna Docker Airflow untuk portfolio demo.
+      Code adalah identical dengan AWS MWAA.
+
+START AIRFLOW:
+  ⚠️ Stop NiFi dulu: docker stop nifi-container
+
+  $ docker-compose -f infrastructure/docker-compose.yml up -d
+
+ACCESS UI:
+  http://localhost:8080
+  Username: airflow | Password: airflow
+
+STOP AIRFLOW:
+  $ docker-compose -f infrastructure/docker-compose.yml down
+
+UNTUK AWS MWAA (production reference):
+  AWS Console → MWAA → Create environment
+  Upload DAG files ke S3 → MWAA auto-syncs
+  Same DAG code works without modification
+</file>
+
+<file path="airflow/requirements.txt">
+# Airflow runtime dependencies for the Volve pipeline
+# Install inside running containers:
+#   docker exec infrastructure-airflow-scheduler-1 /home/airflow/.local/bin/pip3 install -r /workspace/airflow/requirements.txt
+#   docker exec infrastructure-airflow-webserver-1 /home/airflow/.local/bin/pip3 install -r /workspace/airflow/requirements.txt
+
+databricks-sql-connector
+python-dotenv
+mlflow
+numpy
+pandas
+</file>
+
+<file path="bronze/glue_jobs/HOW_IT_WORKS.txt">
+=== BRONZE LAYER — AWS Glue ===
+
+TUJUAN:
+  Ambil raw files dari S3 landing, tambah metadata, simpan sebagai Delta tables.
+  NO cleaning at this layer — raw as-is.
+
+FILES:
+  bronze_production_daily.py  - Excel → Delta (partition: bronze_year, well_id)
+  bronze_drilling_witsml.py   - WITSML XML → Delta (per folder type)
+  bronze_wellogs_las.py       - LAS → Delta (partition: well_name, log_type)
+
+METADATA ADDED (semua tables):
+  ingestion_ts    TIMESTAMP  When file was processed
+  source_file     STRING     Original filename
+  source_system   STRING     production/witsml/well_logs
+  well_id         STRING     F-1, F-11, F-12
+
+CARA RUN:
+  AWS Console → Glue → Jobs → [job_name] → Run
+  ATAU via Airflow task run_glue_bronze_*
+
+CARA DEBUG:
+  AWS Console → Glue → Jobs → [job] → Runs → Logs
+  Check CloudWatch logs kalau error
+</file>
+
+<file path="bronze/bronze_production.py">
+#!/usr/bin/env python3
+"""
+Bronze Layer — Production Data
+Source : /Volumes/equinor_asa_volve_data_village/public/volve/Production_data/Volve production data.xlsx
+Target : claudecatalog.bronze.raw_production (Delta table, partitioned by date_year + well_id)
+Run    : python bronze/bronze_production.py
+"""
+
+import os
+import sys
+from pathlib import Path
+from dotenv import load_dotenv
+from databricks import sql
+
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+HOST        = os.environ["DATABRICKS_HOST"].replace("https://", "")
+HTTP_PATH   = os.environ["DATABRICKS_HTTP_PATH"]
+TOKEN       = os.environ["DATABRICKS_TOKEN"]
+
+VOLUME_PATH  = "/Volumes/equinor_asa_volve_data_village/public/volve/Production_data/Volve production data.xlsx"
+TARGET_TABLE = "claudecatalog.bronze.raw_production"
+WELLS_IN_SCOPE = ("F-1", "F-11", "F-12")
+
+SQL_CREATE_SCHEMA = "CREATE SCHEMA IF NOT EXISTS claudecatalog.bronze"
+
+SQL_DROP_TABLE = f"DROP TABLE IF EXISTS {TARGET_TABLE}"
+
+# NOTE: Databricks Excel reader via read_files() does not honour 'header => true' in SQL Warehouse —
+# all columns come as _c0.._c23. We skip the literal header row (WHERE _c0 != 'DATEPRD')
+# and alias each _cN to the source column name explicitly.
+SQL_CREATE_TABLE = f"""
+CREATE TABLE {TARGET_TABLE}
+USING DELTA
+COMMENT 'Bronze: raw production data from Equinor Volve dataset. One record per well per report date.'
+PARTITIONED BY (date_year, well_id)
+AS
+SELECT
+  _c0   AS DATEPRD,
+  _c1   AS WELL_BORE_CODE,
+  _c2   AS NPD_WELL_BORE_CODE,
+  _c3   AS NPD_WELL_BORE_NAME,
+  _c4   AS NPD_FIELD_CODE,
+  _c5   AS NPD_FIELD_NAME,
+  _c6   AS NPD_FACILITY_CODE,
+  _c7   AS NPD_FACILITY_NAME,
+  _c8   AS ON_STREAM_HRS,
+  _c9   AS AVG_DOWNHOLE_PRESSURE,
+  _c10  AS AVG_DOWNHOLE_TEMPERATURE,
+  _c11  AS AVG_DP_TUBING,
+  _c12  AS AVG_ANNULUS_PRESS,
+  _c13  AS AVG_CHOKE_SIZE_P,
+  _c14  AS AVG_CHOKE_UOM,
+  _c15  AS AVG_WHP_P,
+  _c16  AS AVG_WHT_P,
+  _c17  AS DP_CHOKE_SIZE,
+  _c18  AS BORE_OIL_VOL,
+  _c19  AS BORE_GAS_VOL,
+  _c20  AS BORE_WAT_VOL,
+  _c21  AS BORE_WI_VOL,
+  _c22  AS FLOW_KIND,
+  _c23  AS WELL_TYPE,
+  REGEXP_EXTRACT(_c1, 'F-[0-9]+', 0)  AS well_id,
+  YEAR(TO_DATE(_c0, 'dd-MMM-yy'))      AS date_year,
+  current_timestamp()                  AS ingestion_ts,
+  'equinor_volve_volume'               AS source_system,
+  '{VOLUME_PATH}'                      AS source_file
+FROM read_files(
+  '{VOLUME_PATH}',
+  format => 'excel'
+)
+WHERE _c0 != 'DATEPRD'
+  AND REGEXP_EXTRACT(_c1, 'F-[0-9]+', 0) IN ('F-1', 'F-11', 'F-12')
+"""
+
+SQL_ROW_COUNT   = f"SELECT COUNT(*) FROM {TARGET_TABLE}"
+SQL_WELL_COUNTS = f"""
+  SELECT well_id, date_year, COUNT(*) AS row_count
+  FROM {TARGET_TABLE}
+  GROUP BY well_id, date_year
+  ORDER BY well_id, date_year
+  LIMIT 30
+"""
+
+
+def run():
+    print(f"\n{'='*60}")
+    print("Bronze Layer — Production Data")
+    print(f"{'='*60}")
+    print(f"Source : {VOLUME_PATH}")
+    print(f"Target : {TARGET_TABLE}")
+    print(f"Wells  : {WELLS_IN_SCOPE}\n")
+
+    with sql.connect(
+        server_hostname=HOST,
+        http_path=HTTP_PATH,
+        access_token=TOKEN,
+    ) as conn:
+        with conn.cursor() as cur:
+
+            print("[1/4] Creating schema claudecatalog.bronze (if not exists)...")
+            cur.execute(SQL_CREATE_SCHEMA)
+            print("      OK")
+
+            print(f"[2/4] Dropping existing table {TARGET_TABLE} (if exists)...")
+            cur.execute(SQL_DROP_TABLE)
+            print("      OK")
+
+            print(f"[3/4] Creating {TARGET_TABLE} from Excel volume...")
+            print("      (This may take 1-2 minutes on first run)")
+            cur.execute(SQL_CREATE_TABLE)
+            print("      OK")
+
+            print("[4/4] Verifying row counts...")
+            cur.execute(SQL_ROW_COUNT)
+            total = cur.fetchone()[0]
+            print(f"      Total rows : {total:,}")
+
+            cur.execute(SQL_WELL_COUNTS)
+            rows = cur.fetchall()
+            print(f"\n{'Well':<8} {'Year':<6} {'Rows':>8}")
+            print("-" * 25)
+            for well_id, date_year, count in rows:
+                print(f"{str(well_id):<8} {str(date_year):<6} {count:>8,}")
+
+    print(f"\nDone. Table {TARGET_TABLE} is ready.\n")
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    except Exception as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+</file>
+
+<file path="bronze/bronze_witsml.py">
+#!/usr/bin/env python3
+"""
+Bronze Layer — WITSML Realtime Drilling Data (Trajectory)
+Source : /Volumes/equinor_asa_volve_data_village/public/volve/WITSML Realtime drilling data/
+Target : claudecatalog.bronze.raw_witsml_trajectory (Delta table, partitioned by well_id)
+Run    : python bronze/bronze_witsml.py
+
+Strategy:
+  1. Discover all well folders for F-1, F-11, F-12
+  2. Within each well folder, list numbered wellbore subdirectories (1/, 2/, etc.)
+  3. Check which numbered subdirs have a trajectory/ folder
+  4. read_files(format='xml', rowTag='trajectory') from those paths
+  5. Bronze stores raw struct (trajectoryStation is nested array — Silver will explode)
+"""
+
+import os
+import re
+import sys
+from pathlib import Path
+from dotenv import load_dotenv
+from databricks import sql
+
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+HOST        = os.environ["DATABRICKS_HOST"].replace("https://", "")
+HTTP_PATH   = os.environ["DATABRICKS_HTTP_PATH"]
+TOKEN       = os.environ["DATABRICKS_TOKEN"]
+
+WITSML_VOLUME = "/Volumes/equinor_asa_volve_data_village/public/volve/WITSML Realtime drilling data"
+TARGET_TABLE  = "claudecatalog.bronze.raw_witsml_trajectory"
+WELLS_IN_SCOPE = ["F-1", "F-11", "F-12"]
+
+
+def discover_well_folders(cur) -> dict[str, list[str]]:
+    """Return {well_id: [folder1, folder2, ...]} for the 3 target wells."""
+    cur.execute(f"LIST '{WITSML_VOLUME}'")
+    rows = cur.fetchall()
+
+    well_folders: dict[str, list[str]] = {w: [] for w in WELLS_IN_SCOPE}
+    for row in rows:
+        path = str(row.path).rstrip("/")
+        last = path.split("/")[-1]
+        if "." in last:
+            continue  # skip files
+
+        for well_id in WELLS_IN_SCOPE:
+            well_num = well_id.split("-")[1]
+            pattern  = re.compile(rf'\bF-{well_num}\b', re.IGNORECASE)
+            if pattern.search(path):
+                well_folders[well_id].append(path + "/")
+                break
+
+    return {k: v for k, v in well_folders.items() if v}
+
+
+def discover_trajectory_paths(cur, well_folders: dict[str, list[str]]) -> dict[str, list[str]]:
+    """
+    For each well folder, list numbered wellbore subdirectories and check which
+    contain a trajectory/ subfolder. Return {well_id: [trajectory_path1, ...]}.
+    """
+    trajectory_paths: dict[str, list[str]] = {}
+
+    for well_id, folders in well_folders.items():
+        trajectory_paths[well_id] = []
+
+        for well_folder in folders:
+            # List contents of the well folder
+            cur.execute(f"LIST '{well_folder}'")
+            items = cur.fetchall()
+
+            for item in items:
+                item_name = item.name.rstrip("/")
+                # Numbered wellbore subdirectories (1, 2, 3, ...)
+                if item.size == 0 and item_name.isdigit():
+                    wellbore_path = item.path
+                    # Check if trajectory/ exists inside this wellbore dir
+                    cur.execute(f"LIST '{wellbore_path}'")
+                    wellbore_contents = cur.fetchall()
+                    sub_names = {r.name.rstrip("/") for r in wellbore_contents}
+                    if "trajectory" in sub_names:
+                        traj_path = wellbore_path + "trajectory/"
+                        trajectory_paths[well_id].append(traj_path)
+
+    return {k: v for k, v in trajectory_paths.items() if v}
+
+
+def select_for_path(well_id: str, traj_path: str) -> str:
+    # Only mandatory WITSML trajectory fields are selected as columns.
+    # Optional fields (serviceCompany, aziRef, mdMn, etc.) vary per WITSML version/file
+    # and are NOT selected individually to avoid UNION ALL schema mismatch.
+    # trajectoryStation → TO_JSON to handle differing nested struct schemas.
+    return f"""  SELECT
+    _uid                                AS trajectory_uid,
+    _uidWell                            AS uid_well,
+    _uidWellbore                        AS uid_wellbore,
+    name                                AS trajectory_name,
+    nameWell                            AS name_well,
+    nameWellbore                        AS name_wellbore,
+    TO_JSON(trajectoryStation)          AS trajectory_stations_json,
+    '{well_id}'                         AS well_id,
+    '{traj_path}'                       AS source_path,
+    current_timestamp()                 AS ingestion_ts,
+    'witsml_trajectory'                 AS source_system
+  FROM read_files(
+    '{traj_path}',
+    format => 'xml',
+    rowTag => 'trajectory'
+  )"""
+
+
+def build_create_table_sql(trajectory_paths: dict[str, list[str]]) -> str:
+    if not any(trajectory_paths.values()):
+        raise ValueError("No trajectory paths found for any well.")
+
+    all_selects = []
+    for well_id, paths in trajectory_paths.items():
+        for path in paths:
+            all_selects.append(select_for_path(well_id, path))
+
+    union_body = "\nUNION ALL\n".join(all_selects)
+
+    return f"""
+CREATE TABLE {TARGET_TABLE}
+USING DELTA
+COMMENT 'Bronze: raw WITSML trajectory data. One row per trajectory. trajectory_stations is nested array — Silver will explode and flatten.'
+PARTITIONED BY (well_id)
+AS
+{union_body}
+"""
+
+
+def run():
+    print(f"\n{'='*60}")
+    print("Bronze Layer — WITSML Trajectory Data")
+    print(f"{'='*60}")
+    print(f"Source : {WITSML_VOLUME}")
+    print(f"Target : {TARGET_TABLE}")
+    print(f"Wells  : {WELLS_IN_SCOPE}\n")
+
+    with sql.connect(
+        server_hostname=HOST,
+        http_path=HTTP_PATH,
+        access_token=TOKEN,
+    ) as conn:
+        with conn.cursor() as cur:
+
+            print("[1/5] Ensuring schema claudecatalog.bronze exists...")
+            cur.execute("CREATE SCHEMA IF NOT EXISTS claudecatalog.bronze")
+            print("      OK")
+
+            print("[2/5] Discovering WITSML well folders...")
+            well_folders = discover_well_folders(cur)
+            if not well_folders:
+                print("      ERROR: No well folders found.")
+                sys.exit(1)
+            total_folders = sum(len(v) for v in well_folders.values())
+            print(f"      Found {total_folders} well folders across {len(well_folders)} wells")
+
+            print("[3/5] Discovering trajectory subdirectories...")
+            trajectory_paths = discover_trajectory_paths(cur, well_folders)
+            if not any(trajectory_paths.values()):
+                print("      ERROR: No trajectory paths found.")
+                sys.exit(1)
+            for well_id, paths in trajectory_paths.items():
+                for p in paths:
+                    print(f"      {well_id:6s} → {'/'.join(p.split('/')[-4:])}")
+
+            print(f"\n[4/5] Dropping existing table {TARGET_TABLE} (if exists)...")
+            cur.execute(f"DROP TABLE IF EXISTS {TARGET_TABLE}")
+            print("      OK")
+
+            print(f"[5/6] Creating {TARGET_TABLE}...")
+            print("      (XML parsing across all trajectory files)")
+            create_sql = build_create_table_sql(trajectory_paths)
+            cur.execute(create_sql)
+            print("      OK")
+
+            print("[6/6] Verifying results...")
+            cur.execute(f"SELECT COUNT(*) FROM {TARGET_TABLE}")
+            total = cur.fetchone()[0]
+            print(f"      Total trajectories : {total:,}")
+
+            cur.execute(f"""
+                SELECT well_id, name_well, name_wellbore, trajectory_uid, source_path
+                FROM {TARGET_TABLE}
+                ORDER BY well_id, name_wellbore
+            """)
+            rows = cur.fetchall()
+            print(f"\n{'Well':<8} {'WellName':<25} {'Wellbore':<20} {'UID':<38}")
+            print("-" * 95)
+            for row in rows:
+                well_id, name_well, name_wellbore, traj_uid, source_path = row
+                name_well_str = str(name_well or '')[:24]
+                name_wb_str   = str(name_wellbore or '')[:19]
+                uid_str       = str(traj_uid or '')[:37]
+                print(f"{str(well_id):<8} {name_well_str:<25} {name_wb_str:<20} {uid_str:<38}")
+
+    print(f"\nDone. Table {TARGET_TABLE} is ready.")
+    print("Next: Silver layer will explode trajectory_stations → one row per survey station.\n")
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    except Exception as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+</file>
+
+<file path="bronze/run_bronze.py">
+#!/usr/bin/env python3
+"""
+Bronze Layer — Orchestrator
+Runs bronze_production and bronze_witsml in sequence (sequential, not parallel — 8GB RAM constraint).
+
+Usage:
+  python bronze/run_bronze.py              # run both
+  python bronze/run_bronze.py --prod       # production only
+  python bronze/run_bronze.py --witsml     # witsml only
+"""
+
+import sys
+import time
+import argparse
+import subprocess
+from pathlib import Path
+
+BRONZE_DIR = Path(__file__).parent
+SCRIPTS = {
+    "prod":   BRONZE_DIR / "bronze_production.py",
+    "witsml": BRONZE_DIR / "bronze_witsml.py",
+}
+
+
+def run_script(name: str, path: Path) -> bool:
+    print(f"\n{'#'*60}")
+    print(f"# Running: {name}")
+    print(f"{'#'*60}\n")
+    t0 = time.time()
+    result = subprocess.run([sys.executable, str(path)], check=False)
+    elapsed = time.time() - t0
+    ok = result.returncode == 0
+    status = "PASSED" if ok else "FAILED"
+    print(f"\n[{status}] {name} — {elapsed:.0f}s")
+    return ok
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Bronze Layer Orchestrator")
+    parser.add_argument("--prod",   action="store_true", help="Run production script only")
+    parser.add_argument("--witsml", action="store_true", help="Run WITSML script only")
+    args = parser.parse_args()
+
+    run_prod   = args.prod   or (not args.prod and not args.witsml)
+    run_witsml = args.witsml or (not args.prod and not args.witsml)
+
+    results = {}
+    t_start = time.time()
+
+    if run_prod:
+        results["bronze_production"] = run_script("bronze_production", SCRIPTS["prod"])
+
+    if run_witsml:
+        results["bronze_witsml"] = run_script("bronze_witsml", SCRIPTS["witsml"])
+
+    total = time.time() - t_start
+    print(f"\n{'='*60}")
+    print(f"Bronze Layer Summary — {total:.0f}s total")
+    print(f"{'='*60}")
+    all_passed = True
+    for script, passed in results.items():
+        icon = "OK" if passed else "FAIL"
+        print(f"  [{icon}]  {script}")
+        if not passed:
+            all_passed = False
+
+    sys.exit(0 if all_passed else 1)
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="data_quality/HOW_IT_WORKS.txt">
+=== DATA QUALITY — Great Expectations ===
+
+TUJUAN:
+  Validate data antara layers.
+  Block downstream kalau CRITICAL expectation fail.
+
+SUITES (4):
+  bronze_production_suite    - Bronze layer validation
+  silver_production_suite    - Silver production validation (DQ GATE)
+  silver_witsml_suite        - Silver WITSML validation
+  gold_feature_suite         - Gold feature store validation
+
+CARA RUN:
+  great_expectations suite list
+  great_expectations checkpoint run volve_silver_checkpoint
+
+RESULTS:
+  HTML docs: data_quality/great_expectations/uncommitted/data_docs/
+  DB table:  silver.dq_results
+  Quarantine: silver.dq_quarantine
+</file>
+
+<file path="docs/ARCHITECTURE.md">
+# ARCHITECTURE.md — Solution Architecture
+## Volve Sensor & Production Analytics Pipeline
+
+**Version:** 2.0 | **Last Updated:** 2026-05-05
+
+> Version 2.0 reflects architecture revision made during Phase 1 — original NiFi + S3 + Glue ingestion replaced with direct Databricks Volume access via Delta Share.
+
+---
+
+## 1. Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────┐
+│          Equinor Volve Data Village                     │
+│   (Databricks Delta Share — read-only public catalog)   │
+│   Catalog: equinor_asa_volve_data_village               │
+│   Path: /Volumes/.../volve/                             │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          │ read_files() via SQL Warehouse
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│                   BRONZE LAYER                          │
+│   claudecatalog.bronze.raw_production                   │
+│   claudecatalog.bronze.raw_witsml_trajectory            │
+│   — Raw data as-is + ingestion_ts, source_system tags   │
+│   — Partitioned by well_id (+ date_year for production) │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          │ SQL Warehouse CTAS
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│                   SILVER LAYER                          │
+│   claudecatalog.silver.cleaned_production               │
+│   claudecatalog.silver.cleaned_trajectory               │
+│   — Type cast, NULL handling, deduplication             │
+│   — Derived: water_cut_pct, gas_oil_ratio, well_id      │
+│   — DQ Gate (Great Expectations > 95%) blocks Gold      │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│                    GOLD LAYER                           │
+│   claudecatalog.gold.production_kpis                    │
+│   claudecatalog.gold.ml_feature_store                   │
+│   — KPIs per well per date                              │
+│   — Anomaly flags (pressure, GOR, water cut, uptime)    │
+│   — Features for ML model training                      │
+└─────────────────────────────────────────────────────────┘
+              │                        │
+              ▼                        ▼
+┌─────────────────┐         ┌─────────────────────────┐
+│    Snowflake    │         │     MLflow (Databricks) │
+│  Serving Layer  │         │  3 models tracked +     │
+│  BI views for   │         │  registered in catalog  │
+│  dashboards     │         └─────────────────────────┘
+└─────────────────┘
+
+           Orchestrated by Apache Airflow (10-task DAG)
+           Quality gated by Great Expectations suites
+```
+
+---
+
+## 2. Layer Responsibilities
+
+| Layer | Compute | Responsibility |
+|-------|---------|----------------|
+| Bronze | Databricks SQL Warehouse | Raw ingest from Volume via `read_files()` + metadata tags |
+| Silver | Databricks SQL Warehouse | Clean, cast, dedupe, validate, derived columns |
+| Gold | Databricks SQL Warehouse | KPIs, feature store, anomaly flags |
+| Serving | Snowflake (X-Small) | Reporting views for BI consumption |
+| Orchestration | Airflow (Docker) | 10-task DAG with DQ gate |
+| DQ | Great Expectations | Validation suites between layers |
+| ML | MLflow (Databricks) | Experiment tracking, model versioning, scoring |
+
+---
+
+## 3. Compute Strategy
+
+**Single compute engine: Databricks SQL Warehouse (Serverless Starter)**
+
+| Item | Detail |
+|------|--------|
+| Warehouse ID | `470a6646b4bd0dd2` |
+| Type | Serverless Starter (Small) |
+| Auto-stop | 10 min inactivity |
+| Catalog | `claudecatalog` (Unity Catalog) |
+| No classic cluster | Confirmed — all SQL, no PySpark clusters |
+
+Scripts run from GitHub Codespaces using `databricks-sql-connector`. No local compute required for ETL.
+
+---
+
+## 4. Data Flow
+
+### Production Data (Excel → Bronze → Silver → Gold)
+
+```
+Volume: .../Production_data/Volve production data.xlsx
+    │
+    │ read_files(format='excel')  — columns as _c0.._c23 (header not auto-detected)
+    ▼
+bronze.raw_production
+    │ 4,967 rows · F-1 (2014-2016), F-11 (2013-2016), F-12 (2008-2016)
+    │ Partitioned: date_year + well_id
+    ▼
+silver.cleaned_production
+    │ Typed: DATEPRD→DATE, volumes→DOUBLE
+    │ Derived: water_cut_pct, gas_oil_ratio, well_id (clean regex)
+    │ DQ validated
+    ▼
+gold.production_kpis + gold.ml_feature_store
+```
+
+### WITSML Data (XML → Bronze → Silver)
+
+```
+Volume: .../WITSML Realtime drilling data/
+  well_folder/N/trajectory/*.xml
+    │
+    │ Discover: LIST Volume → filter F-1|F-11|F-12 → find trajectory/ subdirs
+    │ read_files(format='xml', rowTag='trajectory')
+    │ TO_JSON(trajectoryStation) — serialise nested struct (schema varies by WITSML version)
+    ▼
+bronze.raw_witsml_trajectory
+    │ 22 trajectories · mandatory WITSML fields + stations as JSON string
+    │ Partitioned: well_id
+    ▼
+silver.cleaned_trajectory
+    │ Parse trajectory_stations_json → explode → one row per survey station
+    │ Columns: md_m, incl_deg, azi_deg, tvd_m, disp_ns_m, disp_ew_m
+```
+
+---
+
+## 5. Infrastructure
+
+| Resource | Spec | Cost Model |
+|----------|------|------------|
+| GitHub Codespaces | 2 cores, 8GB RAM, 32GB storage | Free tier |
+| Databricks | Serverless SQL Warehouse | $400 trial credit |
+| AWS S3 | 3 buckets (landing, bronze, silver) | ~$1–5/month |
+| Snowflake | X-Small warehouse | 30-day trial |
+
+### Codespaces RAM Allocation (Sequential Execution)
+
+| Mode | Active Services | RAM Used |
+|------|----------------|----------|
+| Transform | Scripts only (no Docker) | ~2 GB |
+| Orchestrate | Airflow Docker (Airflow OFF when not needed) | ~3.5 GB |
+| Ingestion | NiFi Docker (if used) | ~4 GB |
+
+> **Rule:** Airflow and NiFi must not run concurrently — 8GB RAM insufficient for both.
+
+---
+
+## 6. Architecture Decision Records
+
+### ADR-001: Skip NiFi + AWS Glue ingestion
+**Decision:** Databricks Volume direct access replaces NiFi → S3 → Glue path.
+
+**Why:** Equinor Volve dataset is available as a Databricks Delta Share (`equinor_asa_volve_data_village` catalog). Data is already in a Databricks Volume, accessible via `read_files()` in SQL Warehouse. Building NiFi + Glue would add operational complexity with no data movement benefit.
+
+**Trade-off:** Reduces portfolio breadth (no NiFi demo), but produces a cleaner, more realistic Databricks-native architecture.
+
+---
+
+### ADR-002: SQL Warehouse only — no classic cluster
+**Decision:** All ETL runs on SQL Warehouse. No classic compute clusters provisioned.
+
+**Why:** Classic clusters consume $400 trial credit quickly (~$0.15–0.40/DBU). SQL Warehouse Serverless is more cost-efficient for SQL workloads and sufficient for this dataset size.
+
+**Implication:** PySpark API not available — all transforms written as SQL DDL/DML executed via `databricks-sql-connector` from Codespaces.
+
+---
+
+### ADR-003: TO_JSON() for WITSML nested structs
+**Decision:** `trajectoryStation` column stored as JSON string, not native struct.
+
+**Why:** WITSML XML schema varies between wellbore files (WITSML 1.3.1 vs 1.4.1 have different optional fields). A UNION ALL across multiple trajectory files fails with `INCOMPATIBLE_COLUMN_TYPE` when struct schemas differ. Serialising to JSON avoids the conflict at Bronze layer; Silver parses the JSON into flat columns.
+
+---
+
+### ADR-004: Delta Lake as table format
+**Decision:** All layers use Delta tables (Unity Catalog managed).
+
+**Why:** ACID transactions, time travel (data rollback), schema evolution, MERGE operations. Delta is the Databricks-native format and deeply integrated with Unity Catalog governance.
+
+---
+
+### ADR-005: 3 wells only (F-1, F-11, F-12)
+**Decision:** Process only F-1, F-11, F-12 from the 29 available wells.
+
+**Why:** Free-tier SQL Warehouse credit constraint. Full 29-well processing estimated at 10× the DBU cost. 3 wells provide sufficient variety (different operators, different production periods) for meaningful analytics and ML.
+
+---
+
+### ADR-006: Docker Airflow instead of MWAA
+**Decision:** Apache Airflow running in Docker on Codespaces.
+
+**Why:** Amazon MWAA costs ~$50/month minimum. Docker Airflow is free, uses identical DAG code, and is sufficient for portfolio demonstration. The DAG structure and task definitions are directly portable to MWAA or any managed Airflow provider.
+
+---
+
+### ADR-007: Excel header row workaround
+**Decision:** Hardcode column aliases (_c0 → DATEPRD, _c1 → WELL_BORE_CODE, etc.) and filter header row with `WHERE _c0 != 'DATEPRD'`.
+
+**Why:** Databricks SQL Warehouse `read_files(format='excel')` does not automatically detect the header row — all columns are returned as `_c0`, `_c1`, etc. The first data row contains the actual column names. This workaround correctly handles the 24-column production Excel file.
+
+---
+
+## 7. Security
+
+| Layer | Method |
+|-------|--------|
+| AWS credentials | IAM user `mang-dev` + keys in `.env` (gitignored) |
+| Databricks | Personal Access Token in `.env` |
+| Databricks secrets | Scope `aws` — access-key + secret-key stored in Databricks Secrets |
+| Snowflake | Username + password in `.env` |
+| Airflow | Fernet key in `.env`, admin user configured |
+| Git | `.env` gitignored, `.env.example` committed (no credentials) |
+
+---
+
+## 8. Naming Conventions
+
+| Item | Convention | Example |
+|------|-----------|---------|
+| Python scripts | snake_case | `silver_production.py` |
+| Delta tables | `layer.table_name` | `silver.cleaned_production` |
+| Columns (source) | UPPERCASE (preserved) | `BORE_OIL_VOL` |
+| Columns (derived) | snake_case | `water_cut_pct` |
+| Well ID | `F-{number}` | `F-1`, `F-11`, `F-12` |
+| Partitions | `date_year`, `well_id` | Consistent across all layers |
+| DAG ID | `volve_*` | `volve_daily_pipeline` |
+| GE suites | `{layer}_{table}_suite` | `silver_production_suite` |
+
+---
+
+*Document Owner: Data Engineering — Volve Pipeline Project*
+</file>
+
+<file path="docs/BRD.md">
+# BRD — Business Requirements Document
+## Volve Sensor & Production Analytics Pipeline
+
+**Version:** 1.0 | **Last Updated:** 2026-05-05
+
+---
+
+## 1. Business Problem Statement
+
+No automated pipeline exists to transform raw sensor and drilling data into
+actionable intelligence for operations and data science teams.
+
+---
+
+## 2. Stakeholders
+
+| Stakeholder | Role | Keperluan Utama |
+|-------------|------|-----------------|
+| Operations Team | Primary Consumer | Real-time monitoring, anomaly alerts, daily report |
+| Data Science Team | Secondary Consumer | Clean feature store, ML model inputs |
+| Data Engineering | Builder & Owner | Pipeline reliability, DQ enforcement |
+| Field Management | Executive Viewer | Daily summary, KPI trends |
+
+---
+
+## 3. Business Requirements
+
+### Operations Team
+
+| ID | Keperluan | Priority |
+|----|-----------|----------|
+| BR-01 | Detect sensor anomali dalam masa < 5 minit | CRITICAL |
+| BR-02 | Daily production report siap sebelum 6 AM | HIGH |
+| BR-03 | Alert bila pressure drop > 500 psi dari 24-hr rolling avg | CRITICAL |
+| BR-04 | Alert bila zero production tapi ON_STREAM_HRS > 0 | CRITICAL |
+| BR-05 | Alert bila sensor flatline 3 readings berturut-turut | HIGH |
+| BR-06 | Alert bila water cut spike > 80% | HIGH |
+| BR-07 | Alert bila GOR > 3x well baseline | HIGH |
+
+### Data Science Team
+
+| ID | Keperluan | Priority |
+|----|-----------|----------|
+| BR-09 | Clean feature store di Gold layer | HIGH |
+| BR-10 | 3 MLflow models: pressure, drilling, anomaly | HIGH |
+| BR-11 | Historical data untuk backtesting | MEDIUM |
+
+---
+
+## 4. KPI Utama
+
+| KPI | Target |
+|-----|--------|
+| Pipeline reliability | > 99% daily runs |
+| Anomaly detection latency | < 5 minit |
+| Silver layer SLA | Ready sebelum 6 AM |
+| Forecast accuracy | MAPE < 15% |
+| DQ pass rate | > 95% per suite |
+
+---
+
+## 5. Alert Thresholds
+
+| Alert | Condition | Severity | Channel |
+|-------|-----------|----------|---------|
+| Pressure drop | > 500 psi dari 24-hr rolling avg | HIGH | Slack + Email |
+| Zero production | BORE_OIL_VOL=0 & ON_STREAM_HRS>0 | CRITICAL | PagerDuty |
+| Sensor flatline | Nilai sama 3 readings | MEDIUM | Email |
+| Water cut spike | water_cut > 80% | HIGH | Slack + Email |
+| GOR anomaly | GOR > 3x well baseline | HIGH | Slack + Email |
+
+---
+
+## 6. Business Rules & Definitions
+
+| Term | Definisi |
+|------|----------|
+| Water Cut | BORE_WAT_VOL / (BORE_OIL_VOL + BORE_WAT_VOL) × 100 |
+| GOR | BORE_GAS_VOL / BORE_OIL_VOL — null jika oil=0 |
+| Pressure Drop Alert | AVG_DOWNHOLE_PRESSURE turun > 500 psi dari 24h avg |
+| Valid Pressure Range | 0 – 10,000 psi |
+| Valid Oil Volume | >= 0 (negative = quarantine) |
+
+---
+
+## 7. Constraints
+
+| Constraint | Detail |
+|------------|--------|
+| Budget | AWS free tier + Databricks $400 + Snowflake 30-day trial |
+| Codespaces | 2 core, 8GB RAM, 32GB storage |
+| Wells in scope | F-1, F-11, F-12 only |
+| Dataset | Sample — not full 11,664 XML files |
+
+---
+
+*Document Owner: Data Engineering Team*
+</file>
+
+<file path="docs/DQD.md">
+# DQD — Data Quality Document
+## Volve Sensor & Production Analytics Pipeline
+
+**Version:** 1.0 | **Last Updated:** 2026-05-05
+
+---
+
+## 1. DQ Dimensions
+
+| Dimension | Check |
+|-----------|-------|
+| Completeness | WELL_BORE_CODE, DATEPRD NOT NULL |
+| Accuracy | Pressure 0-10,000 psi, oil_vol >= 0 |
+| Consistency | Bronze count ≈ Silver count (< 1% diff) |
+| Uniqueness | No dupe per (DATEPRD, WELL_BORE_CODE) |
+| Timeliness | Files in S3 by 1 AM |
+
+---
+
+## 2. Suite 1 — Bronze Production
+
+**Suite:** `bronze_production_suite` | **Run:** Daily 3 AM
+
+| Expectation | Column | Severity |
+|-------------|--------|----------|
+| not_be_null | WELL_BORE_CODE | CRITICAL |
+| not_be_null | DATEPRD | CRITICAL |
+| row_count 1-100,000 | — | CRITICAL |
+| values_in_set | FLOW_KIND: [production,injection,test] | MEDIUM |
+
+---
+
+## 3. Suite 2 — Silver Production
+
+**Suite:** `silver_production_suite` | **Run:** Daily 5:30 AM
+
+| Expectation | Column | Config | Severity |
+|-------------|--------|--------|----------|
+| not_be_null | WELL_BORE_CODE | 100% | CRITICAL |
+| not_be_null | DATEPRD | 100% | CRITICAL |
+| be_between | AVG_DOWNHOLE_PRESSURE | 0-10,000, 99% | HIGH |
+| be_between | BORE_OIL_VOL | min:0, 99% | HIGH |
+| be_between | ON_STREAM_HRS | 0-24 | HIGH |
+| be_unique | (DATEPRD, WELL_BORE_CODE) | — | HIGH |
+| values_in_set | well_id | [F-1,F-11,F-12] | CRITICAL |
+
+---
+
+## 4. Suite 3 — Silver WITSML
+
+**Suite:** `silver_witsml_suite` | **Run:** Daily 5:30 AM
+
+| Expectation | Column | Severity |
+|-------------|--------|----------|
+| not_be_null | well_name | CRITICAL |
+| be_between | md | 0-10,000 | HIGH |
+| be_between | incl | 0-180 | HIGH |
+| be_between | azi | 0-360 | MEDIUM |
+
+---
+
+## 5. Suite 4 — Gold Feature Store
+
+**Suite:** `gold_feature_suite` | **Run:** Daily 6 AM
+
+| Expectation | Column | Severity |
+|-------------|--------|----------|
+| not_be_null | well_id | CRITICAL |
+| not_be_null | DATEPRD | CRITICAL |
+| row_count >= 3 | — | CRITICAL |
+
+---
+
+## 6. Reconciliation Checks
+
+| Check | Tolerance | Action |
+|-------|-----------|--------|
+| Bronze vs Silver count (production) | < 1% | Alert |
+| Bronze vs Silver count (witsml) | < 5% | Alert if > 5% |
+| Silver vs Gold (DATEPRD, well_id) | 0 missing | Block Snowflake |
+
+---
+
+## 7. Quarantine Table — silver.dq_quarantine
+
+| Column | Type | Notes |
+|--------|------|-------|
+| quarantine_id | STRING | UUID |
+| source_table | STRING | Origin |
+| run_date | DATE | DQ run date |
+| well_id | STRING | Affected well |
+| row_data | STRING | JSON of row |
+| failure_reason | STRING | Which expectation |
+| severity | STRING | CRITICAL/HIGH/MEDIUM |
+| resolved | BOOLEAN | Default False |
+
+---
+
+## 8. Action on Failure
+
+| Severity | Action |
+|----------|--------|
+| CRITICAL | Block downstream + PagerDuty |
+| HIGH | Quarantine bad rows + continue |
+| MEDIUM | Flag rows (dq_flag=True) + continue |
+
+---
+
+## 9. Alert Thresholds
+
+| Condition | Alert | Channel |
+|-----------|-------|---------|
+| Pass rate < 95% | WARNING | Slack |
+| Pass rate < 90% | HIGH | Slack + Email |
+| Any CRITICAL fail | CRITICAL | PagerDuty |
+| Quarantine > 5% | HIGH | Slack + Email |
+
+---
+
+*Document Owner: Data Engineering Team*
+</file>
+
+<file path="docs/DRD.md">
+# DRD — Data Requirements Document
+## Volve Sensor & Production Analytics Pipeline
+
+**Version:** 1.0 | **Last Updated:** 2026-05-05
+
+---
+
+## 1. Source Systems Summary
+
+| Source | Format | Files | Volume | Frequency |
+|--------|--------|-------|--------|-----------|
+| Production Data | Excel (.xlsx) | 1 file, 2 sheets | 15,634 rows | Daily batch |
+| WITSML Drilling | XML | 11,664 files (sample ~500) | ~50MB sample | Daily batch |
+| Well Logs | LAS | 301 files (sample ~30) | ~20MB sample | On-demand |
+
+**Wells in scope:** F-1, F-11, F-12
+**Landing Zone:** AWS S3 `s3://volve-landing/`
+
+---
+
+## 2. Source 1 — Production Data (Excel)
+
+**File:** `Volve production data.xlsx`
+**Sheet:** Daily Production Data (15,634 rows)
+
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| DATEPRD | DATE | NO | Partition key |
+| WELL_BORE_CODE | STRING | NO | Primary identifier |
+| ON_STREAM_HRS | INT | NO | Hours on production |
+| AVG_DOWNHOLE_PRESSURE | FLOAT | YES | psi |
+| AVG_WHP_P | FLOAT | NO | Wellhead pressure psi |
+| BORE_OIL_VOL | INT | NO | Daily oil Sm3 |
+| BORE_GAS_VOL | INT | NO | Daily gas Sm3 |
+| BORE_WAT_VOL | INT | NO | Daily water Sm3 |
+| BORE_WI_VOL | FLOAT | YES | Water injection — all null |
+| FLOW_KIND | STRING | NO | production/injection/test |
+| WELL_TYPE | STRING | NO | WI/P |
+
+---
+
+## 3. Source 2 — WITSML XML
+
+**Universal tags (ALL files):** name, dTimCreation, dTimLastChange, priv_dTimReceived, sourceName
+
+**Trajectory-specific tags:** md, tvd, incl, azi, dTimStn, dls, dispNs, dispEw
+
+**NiFi Routing Logic:**
+
+| Folder Type | S3 Destination |
+|-------------|----------------|
+| _wellInfo | s3://volve-landing/witsml/well_info/ |
+| _wellboreInfo | s3://volve-landing/witsml/wellbore_info/ |
+| trajectory | s3://volve-landing/witsml/trajectory/ |
+| message | s3://volve-landing/witsml/messages/ |
+| bhaRun | s3://volve-landing/witsml/bha/ |
+| Others | s3://volve-landing/witsml/other/ |
+
+> ⚠️ 72 tags appear in SOME files only — handle missing tags gracefully
+
+---
+
+## 4. Source 3 — Well Logs (LAS)
+
+**NULL value indicator:** -999.25 — WAJIB replace dengan NULL
+
+**Common curves:** DEPT (universal), RPM, SWOB, TFLO, SPPA, GR_CAL, ECD, ROP
+
+---
+
+## 5. SLA Summary
+
+| Layer | SLA |
+|-------|-----|
+| S3 Landing | Files arrive by 1 AM |
+| Bronze complete | By 4 AM |
+| Silver complete | By 5:30 AM |
+| Gold complete | By 6 AM |
+| Anomaly detection | < 5 minit dari landing |
+
+---
+
+## 6. Data Retention
+
+| Layer | Retention | Storage |
+|-------|-----------|---------|
+| Bronze (S3) | Forever | Delta Lake |
+| Silver (Databricks) | 3 tahun | Delta Lake |
+| Gold (Snowflake) | 5 tahun | Snowflake tables |
+
+---
+
+*Document Owner: Data Engineering Team*
+</file>
+
+<file path="docs/OPS_RUNBOOK.md">
+# OPS_RUNBOOK.md — Operations Runbook
+## Volve Sensor & Production Analytics Pipeline
+
+**Version:** 1.0 | **Last Updated:** 2026-05-05
+
+---
+
+## 1. Monitoring Endpoints
+
+| Service | URL/Command |
+|---------|-------------|
+| Airflow UI | http://localhost:8080 |
+| NiFi UI | https://localhost:8443/nifi |
+| Databricks | https://community.cloud.databricks.com |
+| DQ Results | SELECT * FROM silver.dq_results WHERE run_date = CURRENT_DATE |
+
+---
+
+## 2. Alert SLAs
+
+| Severity | Channel | Response |
+|----------|---------|----------|
+| CRITICAL | PagerDuty | 15 minit |
+| HIGH | Slack + Email | 1 jam |
+| MEDIUM | Email | Hari bekerja |
+
+---
+
+## 3. Playbooks
+
+### SCENARIO 1: Glue Job FAILED
+```bash
+# Check error
+# AWS Console → Glue → Jobs → [job] → Runs → Error
+
+# Fix: S3 file missing
+aws s3 ls s3://volve-landing/production/
+
+# Fix: Restart NiFi
+docker restart nifi-container
+
+# Rerun
+airflow tasks clear volve_daily_pipeline -t run_glue_bronze_production --yes
+```
+
+### SCENARIO 2: Databricks Job FAILED
+```bash
+# Check Databricks UI → Jobs → Latest Run → Error
+
+# Fix: Cluster terminated (most common)
+databricks clusters start --cluster-id $DATABRICKS_CLUSTER_ID
+
+# Fix: OOM
+# Add in notebook: spark.conf.set("spark.sql.shuffle.partitions", "8")
+```
+
+### SCENARIO 3: DQ CRITICAL Fail
+```sql
+SELECT expectation_type, column_name, observed_value, rows_affected
+FROM silver.dq_results
+WHERE run_date = CURRENT_DATE AND severity = 'CRITICAL' AND success = FALSE;
+```
+
+### SCENARIO 4: NiFi Not Running
+```bash
+docker ps -a | grep nifi
+docker start nifi-container
+# Kalau container hilang:
+docker run -d --name nifi-container -p 8443:8443 \
+  -e SINGLE_USER_CREDENTIALS_USERNAME=admin \
+  -e SINGLE_USER_CREDENTIALS_PASSWORD=adminpassword123 \
+  apache/nifi:1.23.2
+```
+
+### SCENARIO 5: Airflow Not Running
+```bash
+docker-compose -f infrastructure/docker-compose.yml restart airflow-scheduler airflow-webserver
+airflow dags trigger volve_daily_pipeline
+```
+
+---
+
+## 4. Backfill Procedure
+
+```bash
+# Step 1: Clear Bronze partition
+# In Databricks: spark.sql("DELETE FROM bronze.raw_production WHERE DATEPRD='2014-06-15'")
+
+# Step 2: Trigger with date param
+airflow dags trigger volve_daily_pipeline --conf '{"execution_date": "2014-06-15"}'
+
+# Step 3: Verify
+# Snowflake: SELECT * FROM silver.dq_results WHERE run_date = '2014-06-15'
+```
+
+---
+
+## 5. Codespaces Session Checklist
+
+### Start of Session
+```bash
+docker ps                         # Check running containers
+export $(cat .env | xargs)        # Load env vars
+databricks clusters list          # Check Databricks
+```
+
+### End of Session
+```bash
+docker stop $(docker ps -q)       # Stop all containers
+# Stop Databricks cluster from UI (save credit)
+# Update PROJECT_STATUS.md
+```
+
+---
+
+## 6. Daily Ops Checklist
+
+```
+☐ Airflow: volve_daily_pipeline SUCCESS semalam?
+☐ DQ: Pass rate > 95%?
+☐ Quarantine: < 5% rows quarantined?
+☐ Databricks cluster auto-terminated?
+☐ Snowflake Gold data updated?
+```
+
+---
+
+*Document Owner: Data Engineering Team*
+</file>
+
+<file path="docs/PIPELINE_SPEC.md">
+# PIPELINE_SPEC.md — Pipeline Specification
+## Volve Sensor & Production Analytics Pipeline
+
+**Version:** 1.0 | **Last Updated:** 2026-05-05
+
+---
+
+## 1. NiFi Ingestion — Groovy Router
+
+```groovy
+// Route WITSML XML files by folder type
+def filePath = flowFile.getAttribute('absolute.path') ?: ''
+def routeDestination = 'other'
+
+if (filePath.contains('_wellInfo'))         routeDestination = 'well_info'
+else if (filePath.contains('_wellboreInfo')) routeDestination = 'wellbore_info'
+else if (filePath.contains('/trajectory/')) routeDestination = 'trajectory'
+else if (filePath.contains('/message/'))    routeDestination = 'messages'
+else if (filePath.contains('/bhaRun/'))     routeDestination = 'bha'
+else if (filePath.contains('/mudLog/'))     routeDestination = 'mud_log'
+
+flowFile = session.putAttribute(flowFile, 'witsml.type', routeDestination)
+flowFile = session.putAttribute(flowFile, 'ingestion.timestamp',
+    new Date().format("yyyy-MM-dd'T'HH:mm:ss'Z'"))
+session.transfer(flowFile, REL_SUCCESS)
+```
+
+---
+
+## 2. Bronze Layer — AWS Glue
+
+### bronze_production_daily.py
+- Read Excel (both sheets)
+- Add: ingestion_ts, source_file, well_id
+- Cast DATEPRD → DATE
+- Write Delta — partition by bronze_year, well_id
+- **No cleaning** — raw as-is
+
+### bronze_drilling_witsml.py
+- Read XML by type folder
+- Flatten XML tags → tabular
+- Handle missing tags → NULL
+- Write Delta per type — partition by well_name
+
+### bronze_wellogs_las.py
+- Read LAS via lasio library
+- Extract header + curves
+- Replace -999.25 → NULL
+- Write Delta — partition by well_name, log_type
+
+---
+
+## 3. Silver Layer — Databricks
+
+### silver_clean_production.py
+
+```
+Step 1: DEDUPLICATE — latest ingestion_ts per (DATEPRD, WELL_BORE_CODE)
+Step 2: FILTER — wells F-1, F-11, F-12 + FLOW_KIND='production'
+Step 3: TYPE CAST — DATEPRD→DATE, volumes→FLOAT
+Step 4: NULL HANDLING
+    WELL_BORE_CODE NULL → REJECT (quarantine)
+    BORE_OIL_VOL NULL   → KEEP, flag is_oil_null=True
+Step 5: DERIVED COLUMNS
+    water_cut = BORE_WAT_VOL / (BORE_OIL_VOL + BORE_WAT_VOL) * 100
+    gas_oil_ratio = BORE_GAS_VOL / BORE_OIL_VOL
+    well_id = REGEXP_EXTRACT(WELL_BORE_CODE, 'F-[0-9]+')
+Step 6: WRITE — MERGE by (DATEPRD, WELL_BORE_CODE)
+```
+
+---
+
+## 4. Gold Layer — Databricks
+
+### gold_fact_production.py
+
+| Column | Formula |
+|--------|---------|
+| pressure_delta_24h | pressure - LAG(pressure,1) OVER (PARTITION BY well_id ORDER BY date) |
+| pressure_rolling_avg | AVG(pressure) OVER (7 PRECEDING) |
+| is_anomaly_pressure | pressure_delta_24h > 500 |
+| is_zero_prod_uptime | BORE_OIL_VOL=0 AND ON_STREAM_HRS>0 |
+| is_water_cut_spike | water_cut>80 AND lag(water_cut)<60 |
+| is_gor_anomaly | gas_oil_ratio > well_baseline_gor * 3 |
+
+### gold_feature_store.py
+
+**Model 1 — Pressure Prediction:**
+Features: AVG_DOWNHOLE_PRESSURE lags, AVG_WHP_P, md, tvd, rolling avgs
+Target: next_day_pressure
+
+**Model 2 — Drilling Efficiency:**
+Features: ROP, RPM, SWOB, SPPA, ECD, md (from LAS)
+Target: rop_efficiency_score
+
+**Model 3 — Production Anomaly:**
+Features: ON_STREAM_HRS, volumes, rolling stats, water_cut, GOR, pressure_delta
+Target: is_anomaly (binary)
+
+---
+
+## 5. MLflow Models
+
+| Model | Algorithm | MLflow Experiment |
+|-------|-----------|-------------------|
+| Pressure Prediction | XGBoost Regressor | volve_pressure_prediction |
+| Drilling Efficiency | Random Forest | volve_drilling_efficiency |
+| Anomaly Detection | Isolation Forest | volve_anomaly_detection |
+
+---
+
+## 6. Airflow DAG — 10 Tasks
+
+```
+Task 1:  check_source_files
+Task 2:  run_glue_bronze_production ─┐ parallel
+Task 3:  run_glue_bronze_witsml     ─┘
+Task 4:  run_silver_production      ─┐ parallel
+Task 5:  run_silver_witsml          ─┘
+Task 6:  check_dq_silver              ← DQ GATE
+Task 7:  run_gold_production        ─┐ parallel
+Task 8:  run_gold_features          ─┘
+Task 9:  run_ml_scoring
+Task 10: send_daily_report
+```
+
+Schedule: `0 2 * * *` | Retries: 3 | Retry delay: 5 min
+
+---
+
+## 7. Error Handling
+
+| Scenario | Action |
+|---------|--------|
+| Source file missing | Skip, alert, pickup next run |
+| XML parse error | Quarantine file, continue |
+| NULL in critical field | Quarantine row, continue |
+| DQ CRITICAL fail | Block Gold, alert immediately |
+| Databricks timeout | Auto-restart, retry |
+
+---
+
+## 8. Partitioning Strategy
+
+| Table | Partition | Z-Order |
+|-------|-----------|---------|
+| bronze.raw_production | bronze_year, well_id | DATEPRD |
+| silver.cleaned_production | date_year, well_id | DATEPRD, WELL_BORE_CODE |
+| gold.fact_daily_production | date_year, well_id | DATEPRD |
+| gold.ml_feature_store | well_id | DATEPRD |
+
+---
+
+*Document Owner: Data Engineering Team*
+</file>
+
+<file path="gold/notebooks/DATABRICKS_SETUP.txt">
+=== DATABRICKS SETUP — GOLD LAYER ===
+Sama dengan silver/notebooks/DATABRICKS_SETUP.txt
+Upload notebooks ke: /Shared/volve/gold/
+</file>
+
+<file path="gold/notebooks/HOW_IT_WORKS.txt">
+=== GOLD LAYER — Databricks ===
+
+TUJUAN:
+  Aggregate Silver data. Calculate KPIs and anomaly flags.
+  Build ML feature store.
+
+FILES:
+  gold_fact_production.py  - Daily production facts + anomaly flags
+  gold_feature_store.py    - ML features untuk 3 models
+  gold_aggregations.py     - Weekly + monthly aggregations
+  gold_anomaly_batch.py    - Batch anomaly scoring
+
+KEY BUSINESS RULES:
+  water_cut = BORE_WAT_VOL / (BORE_OIL_VOL + BORE_WAT_VOL) * 100
+  gas_oil_ratio = BORE_GAS_VOL / BORE_OIL_VOL
+  is_anomaly_pressure = pressure_delta_24h > 500
+  is_zero_prod_uptime = (BORE_OIL_VOL=0 AND ON_STREAM_HRS>0)
+
+OUTPUT TABLES:
+  gold.fact_daily_production  - Main KPI table
+  gold.ml_feature_store       - ML training features
+  gold.agg_weekly_production  - Weekly rollups
+  gold.agg_monthly_production - Monthly rollups
+</file>
+
+<file path="gold/gold_ml_features.py">
+#!/usr/bin/env python3
+"""
+Gold Layer — ML Feature Store
+Sources : claudecatalog.silver.cleaned_production
+          claudecatalog.silver.cleaned_trajectory
+Target  : claudecatalog.gold.ml_feature_store (Delta, partitioned by date_year + well_id)
+
+Feature groups:
+  - Raw production metrics (passthrough from silver)
+  - Temporal features         : day_of_week, month_num
+  - Lag features              : pressure_lag1/2/3/7, water_cut_lag1, gor_lag1
+  - Rolling means 7-day       : pressure, oil_vol, water_cut, gor
+  - Rolling means 30-day      : pressure, oil_vol, water_cut, gor
+  - Volatility (std 7-day)    : pressure_7d_std, oil_vol_7d_std
+  - Cumulative production     : cum_oil_vol, cum_gas_vol (well lifetime)
+  - Well characteristics      : total_md_m, max_tvd_m, avg_incl_deg, avg_dls (from trajectory)
+
+Target variables (one table serves all 3 MLflow models):
+  - next_day_pressure    → volve_pressure_prediction    (XGBoost Regressor)
+  - rop_efficiency_score → volve_drilling_efficiency    (Random Forest Regressor)
+  - is_anomaly           → volve_anomaly_detection      (Isolation Forest)
+"""
+
+import os
+import sys
+from pathlib import Path
+from dotenv import load_dotenv
+from databricks import sql
+
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+HOST      = os.environ["DATABRICKS_HOST"].replace("https://", "")
+HTTP_PATH = os.environ["DATABRICKS_HTTP_PATH"]
+TOKEN     = os.environ["DATABRICKS_TOKEN"]
+
+PROD_TABLE = "claudecatalog.silver.cleaned_production"
+TRAJ_TABLE = "claudecatalog.silver.cleaned_trajectory"
+TARGET_TABLE = "claudecatalog.gold.ml_feature_store"
+
+SQL_CREATE_SCHEMA = "CREATE SCHEMA IF NOT EXISTS claudecatalog.gold"
+SQL_DROP_TABLE    = f"DROP TABLE IF EXISTS {TARGET_TABLE}"
+
+# rop_efficiency_score: proxy for well production efficiency.
+#   = (BORE_OIL_VOL / ON_STREAM_HRS) / (total_md_m / 1000)
+#   Units: Sm3/hr per km of wellbore depth — normalises shallow vs deep wells.
+#   NULL when ON_STREAM_HRS = 0 or trajectory data missing.
+#
+# is_anomaly: composite of all three CLAUDE.md anomaly rules (OR logic).
+#   Used as binary target for Isolation Forest training.
+#
+# baseline_gor: full-well-history average — stable denominator.
+# WINDOW w: unbounded lag/lead window, reused for all lag/lead functions.
+SQL_CREATE_TABLE = f"""
+CREATE TABLE {TARGET_TABLE}
+USING DELTA
+COMMENT 'Gold ML feature store. One row per (DATEPRD, well_id). Contains lag/rolling features and three model target variables: next_day_pressure, rop_efficiency_score, is_anomaly.'
+PARTITIONED BY (date_year, well_id)
+AS
+WITH traj_stats AS (
+  SELECT
+    well_id,
+    MAX(md_m)                                                      AS total_md_m,
+    MAX(tvd_m)                                                     AS max_tvd_m,
+    AVG(CASE WHEN is_md_valid AND is_incl_valid THEN incl_deg END) AS avg_incl_deg,
+    AVG(CASE WHEN dls_deg_per_30m IS NOT NULL
+             THEN dls_deg_per_30m END)                             AS avg_dls,
+    COUNT(*)                                                       AS n_survey_stations
+  FROM {TRAJ_TABLE}
+  WHERE is_md_valid
+  GROUP BY well_id
+),
+prod_windowed AS (
+  SELECT
+    DATEPRD,
+    well_id,
+    date_year,
+    BORE_OIL_VOL,
+    BORE_GAS_VOL,
+    BORE_WAT_VOL,
+    ON_STREAM_HRS,
+    AVG_DOWNHOLE_PRESSURE,
+    AVG_DOWNHOLE_TEMPERATURE,
+    AVG_WHP_P,
+    AVG_ANNULUS_PRESS,
+    water_cut_pct,
+    gas_oil_ratio,
+    is_zero_prod_uptime,
+
+    -- Temporal features
+    DAYOFWEEK(DATEPRD)              AS day_of_week,
+    MONTH(DATEPRD)                  AS month_num,
+
+    -- Lag features (for sequence modelling and delta computation)
+    LAG(AVG_DOWNHOLE_PRESSURE, 1) OVER w AS pressure_lag1,
+    LAG(AVG_DOWNHOLE_PRESSURE, 2) OVER w AS pressure_lag2,
+    LAG(AVG_DOWNHOLE_PRESSURE, 3) OVER w AS pressure_lag3,
+    LAG(AVG_DOWNHOLE_PRESSURE, 7) OVER w AS pressure_lag7,
+    LAG(water_cut_pct,          1) OVER w AS water_cut_lag1,
+    LAG(gas_oil_ratio,          1) OVER w AS gor_lag1,
+
+    -- Rolling means (7-day)
+    AVG(AVG_DOWNHOLE_PRESSURE)  OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS pressure_7d_avg,
+    AVG(BORE_OIL_VOL)           OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS oil_vol_7d_avg,
+    AVG(water_cut_pct)          OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS water_cut_7d_avg,
+    AVG(gas_oil_ratio)          OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS gor_7d_avg,
+
+    -- Rolling means (30-day)
+    AVG(AVG_DOWNHOLE_PRESSURE)  OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) AS pressure_30d_avg,
+    AVG(BORE_OIL_VOL)           OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) AS oil_vol_30d_avg,
+    AVG(water_cut_pct)          OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) AS water_cut_30d_avg,
+    AVG(gas_oil_ratio)          OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) AS gor_30d_avg,
+
+    -- Volatility (7-day std dev)
+    STDDEV(AVG_DOWNHOLE_PRESSURE) OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS pressure_7d_std,
+    STDDEV(BORE_OIL_VOL)          OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS oil_vol_7d_std,
+
+    -- Cumulative production (well lifetime, resets only at partition boundary)
+    SUM(BORE_OIL_VOL) OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cum_oil_vol,
+    SUM(BORE_GAS_VOL) OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cum_gas_vol,
+
+    -- Baseline GOR for is_gor_anomaly (stable well-level mean)
+    AVG(gas_oil_ratio) OVER (PARTITION BY well_id) AS baseline_gor,
+
+    -- Target 1: next-day pressure for regression model
+    LEAD(AVG_DOWNHOLE_PRESSURE, 1) OVER w AS next_day_pressure
+
+  FROM {PROD_TABLE}
+  WINDOW w AS (PARTITION BY well_id ORDER BY DATEPRD)
+)
+SELECT
+  p.DATEPRD,
+  p.well_id,
+  p.date_year,
+
+  -- Raw production metrics
+  p.BORE_OIL_VOL,
+  p.BORE_GAS_VOL,
+  p.BORE_WAT_VOL,
+  p.ON_STREAM_HRS,
+  p.AVG_DOWNHOLE_PRESSURE,
+  p.AVG_DOWNHOLE_TEMPERATURE,
+  p.AVG_WHP_P,
+  p.AVG_ANNULUS_PRESS,
+  p.water_cut_pct,
+  p.gas_oil_ratio,
+  p.is_zero_prod_uptime,
+
+  -- Temporal features
+  p.day_of_week,
+  p.month_num,
+
+  -- Lag features
+  p.pressure_lag1,
+  p.pressure_lag2,
+  p.pressure_lag3,
+  p.pressure_lag7,
+  p.water_cut_lag1,
+  p.gor_lag1,
+
+  -- Rolling averages (7-day)
+  p.pressure_7d_avg,
+  p.oil_vol_7d_avg,
+  p.water_cut_7d_avg,
+  p.gor_7d_avg,
+
+  -- Rolling averages (30-day)
+  p.pressure_30d_avg,
+  p.oil_vol_30d_avg,
+  p.water_cut_30d_avg,
+  p.gor_30d_avg,
+
+  -- Volatility features
+  p.pressure_7d_std,
+  p.oil_vol_7d_std,
+
+  -- Cumulative production
+  p.cum_oil_vol,
+  p.cum_gas_vol,
+
+  -- Pressure delta (derived anomaly feature)
+  CASE
+    WHEN p.AVG_DOWNHOLE_PRESSURE IS NOT NULL AND p.pressure_lag1 IS NOT NULL
+    THEN ABS(p.AVG_DOWNHOLE_PRESSURE - p.pressure_lag1)
+    ELSE NULL
+  END AS pressure_delta_24h,
+
+  -- Well trajectory characteristics (static per well, joined from silver)
+  t.total_md_m,
+  t.max_tvd_m,
+  t.avg_incl_deg,
+  t.avg_dls,
+  t.n_survey_stations,
+
+  -- === TARGET VARIABLES ===
+
+  -- Target 1: volve_pressure_prediction (XGBoost Regressor)
+  p.next_day_pressure,
+
+  -- Target 2: volve_drilling_efficiency (Random Forest Regressor)
+  -- Proxy: oil production per uptime-hour per km of wellbore depth
+  CASE
+    WHEN p.ON_STREAM_HRS > 0
+     AND t.total_md_m IS NOT NULL
+     AND t.total_md_m > 0
+    THEN (p.BORE_OIL_VOL / p.ON_STREAM_HRS) / (t.total_md_m / 1000.0)
+    ELSE NULL
+  END AS rop_efficiency_score,
+
+  -- Target 3: volve_anomaly_detection (Isolation Forest)
+  -- OR of all three CLAUDE.md anomaly rules
+  CASE
+    WHEN (
+      p.AVG_DOWNHOLE_PRESSURE IS NOT NULL AND p.pressure_lag1 IS NOT NULL
+      AND ABS(p.AVG_DOWNHOLE_PRESSURE - p.pressure_lag1) > 500
+    )
+    OR (
+      p.water_cut_pct IS NOT NULL AND p.water_cut_lag1 IS NOT NULL
+      AND p.water_cut_pct > 80 AND p.water_cut_lag1 < 60
+    )
+    OR (
+      p.gas_oil_ratio IS NOT NULL AND p.baseline_gor IS NOT NULL
+      AND p.baseline_gor > 0
+      AND p.gas_oil_ratio > p.baseline_gor * 3
+    )
+    THEN TRUE ELSE FALSE
+  END AS is_anomaly,
+
+  current_timestamp() AS processed_ts
+
+FROM prod_windowed p
+LEFT JOIN traj_stats t ON p.well_id = t.well_id
+"""
+
+SQL_ROW_COUNT = f"SELECT COUNT(*) FROM {TARGET_TABLE}"
+
+SQL_TARGET_COVERAGE = f"""
+  SELECT
+    well_id,
+    COUNT(*)                                                         AS total_rows,
+    SUM(CASE WHEN next_day_pressure    IS NOT NULL THEN 1 ELSE 0 END) AS has_pressure_target,
+    SUM(CASE WHEN rop_efficiency_score IS NOT NULL THEN 1 ELSE 0 END) AS has_rop_target,
+    SUM(CASE WHEN is_anomaly                       THEN 1 ELSE 0 END) AS anomaly_count,
+    SUM(CASE WHEN total_md_m           IS NOT NULL THEN 1 ELSE 0 END) AS has_trajectory,
+    ROUND(AVG(pressure_7d_avg), 1)                                   AS avg_pressure_7d,
+    ROUND(AVG(water_cut_7d_avg), 2)                                  AS avg_water_cut_7d
+  FROM {TARGET_TABLE}
+  GROUP BY well_id
+  ORDER BY well_id
+"""
+
+SQL_FEATURE_NULLS = f"""
+  SELECT
+    SUM(CASE WHEN pressure_lag1       IS NULL THEN 1 ELSE 0 END) AS null_pressure_lag1,
+    SUM(CASE WHEN pressure_7d_avg     IS NULL THEN 1 ELSE 0 END) AS null_pressure_7d,
+    SUM(CASE WHEN oil_vol_7d_avg      IS NULL THEN 1 ELSE 0 END) AS null_oil_7d,
+    SUM(CASE WHEN total_md_m          IS NULL THEN 1 ELSE 0 END) AS null_total_md,
+    SUM(CASE WHEN next_day_pressure   IS NULL THEN 1 ELSE 0 END) AS null_pressure_target,
+    SUM(CASE WHEN rop_efficiency_score IS NULL THEN 1 ELSE 0 END) AS null_rop_target
+  FROM {TARGET_TABLE}
+"""
+
+
+def run():
+    print(f"\n{'='*60}")
+    print("Gold Layer — ML Feature Store")
+    print(f"{'='*60}")
+    print(f"Sources : {PROD_TABLE}")
+    print(f"          {TRAJ_TABLE}")
+    print(f"Target  : {TARGET_TABLE}\n")
+
+    with sql.connect(
+        server_hostname=HOST,
+        http_path=HTTP_PATH,
+        access_token=TOKEN,
+    ) as conn:
+        with conn.cursor() as cur:
+
+            print("[1/6] Creating schema claudecatalog.gold (if not exists)...")
+            cur.execute(SQL_CREATE_SCHEMA)
+            print("      OK")
+
+            print(f"[2/6] Dropping existing table {TARGET_TABLE}...")
+            cur.execute(SQL_DROP_TABLE)
+            print("      OK")
+
+            print(f"[3/6] Creating {TARGET_TABLE}...")
+            print("      (CTAS with joins + window functions — may take ~2 min)")
+            cur.execute(SQL_CREATE_TABLE)
+            print("      OK")
+
+            print("[4/6] Verifying row count...")
+            cur.execute(SQL_ROW_COUNT)
+            total = cur.fetchone()[0]
+            print(f"      Total rows : {total:,}")
+
+            print("[5/6] Target variable coverage by well...")
+            cur.execute(SQL_TARGET_COVERAGE)
+            rows = cur.fetchall()
+            print(f"\n{'Well':<8} {'Rows':>6}  {'PressTarget':>12}  {'ROPTarget':>10}  {'Anomalies':>10}  {'HasTraj':>8}  {'P7d':>8}  {'WC7d':>7}")
+            print("-" * 80)
+            for row in rows:
+                well, total_r, pt, rt, ac, ht, p7d, wc7d = row
+                p7d_s  = f"{p7d:.1f}"  if p7d  is not None else "N/A"
+                wc7d_s = f"{wc7d:.2f}" if wc7d is not None else "N/A"
+                print(f"{str(well):<8} {int(total_r):>6}  {int(pt):>12}  {int(rt):>10}  {int(ac):>10}  {int(ht):>8}  {p7d_s:>8}  {wc7d_s:>7}")
+
+            print("\n[6/6] Feature NULL check...")
+            cur.execute(SQL_FEATURE_NULLS)
+            nr = cur.fetchone()
+            null_p_lag, null_p7d, null_oil7d, null_md, null_pt, null_rt = nr
+            print(f"      null pressure_lag1     : {null_p_lag}")
+            print(f"      null pressure_7d_avg   : {null_p7d}")
+            print(f"      null oil_vol_7d_avg    : {null_oil7d}")
+            print(f"      null total_md_m        : {null_md}  (expected — trajectory coverage)")
+            print(f"      null next_day_pressure : {null_pt}  (last row per well has no LEAD)")
+            print(f"      null rop_efficiency    : {null_rt}")
+
+    print(f"\nDone. {TARGET_TABLE} is ready.\n")
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    except Exception as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+</file>
+
+<file path="gold/gold_production_daily.py">
+#!/usr/bin/env python3
+"""
+Gold Layer — Production Daily KPIs
+Source : claudecatalog.silver.cleaned_production
+Target : claudecatalog.gold.production_daily (Delta, partitioned by date_year + well_id)
+
+Adds on top of Silver:
+  - pressure_delta_24h  : ABS(today - yesterday pressure)
+  - Anomaly flags       : is_anomaly_pressure, is_water_cut_spike, is_gor_anomaly
+  - Rolling averages    : 7-day and 30-day for oil/gas/water/pressure/water_cut
+  - Monthly cumulative  : cum_oil_vol_monthly, cum_gas_vol_monthly
+"""
+
+import os
+import sys
+from pathlib import Path
+from dotenv import load_dotenv
+from databricks import sql
+
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+HOST      = os.environ["DATABRICKS_HOST"].replace("https://", "")
+HTTP_PATH = os.environ["DATABRICKS_HTTP_PATH"]
+TOKEN     = os.environ["DATABRICKS_TOKEN"]
+
+SOURCE_TABLE = "claudecatalog.silver.cleaned_production"
+TARGET_TABLE = "claudecatalog.gold.production_daily"
+
+SQL_CREATE_SCHEMA = "CREATE SCHEMA IF NOT EXISTS claudecatalog.gold"
+SQL_DROP_TABLE    = f"DROP TABLE IF EXISTS {TARGET_TABLE}"
+
+# baseline_gor: full-well-history average — stable denominator for is_gor_anomaly.
+# is_anomaly_pressure: |delta| > 500 psi per CLAUDE.md business rules.
+# is_water_cut_spike : today > 80% AND yesterday < 60% (step-change detection).
+# is_gor_anomaly     : today > 3x well baseline GOR.
+# Monthly cumulative windows restart at the 1st of each calendar month.
+SQL_CREATE_TABLE = f"""
+CREATE TABLE {TARGET_TABLE}
+USING DELTA
+COMMENT 'Gold: daily production KPIs per well with rolling averages, pressure deltas, and anomaly flags. One row per (DATEPRD, well_id).'
+PARTITIONED BY (date_year, well_id)
+AS
+WITH base AS (
+  SELECT
+    DATEPRD,
+    well_id,
+    WELL_BORE_CODE,
+    date_year,
+    BORE_OIL_VOL,
+    BORE_GAS_VOL,
+    BORE_WAT_VOL,
+    BORE_WI_VOL,
+    ON_STREAM_HRS,
+    AVG_DOWNHOLE_PRESSURE,
+    AVG_DOWNHOLE_TEMPERATURE,
+    AVG_ANNULUS_PRESS,
+    AVG_WHP_P,
+    AVG_WHT_P,
+    water_cut_pct,
+    gas_oil_ratio,
+    is_zero_prod_uptime,
+    is_pressure_valid
+  FROM {SOURCE_TABLE}
+),
+enriched AS (
+  SELECT
+    *,
+
+    -- Prior-day values for delta and spike detection
+    LAG(AVG_DOWNHOLE_PRESSURE, 1) OVER (PARTITION BY well_id ORDER BY DATEPRD) AS prev_pressure,
+    LAG(water_cut_pct,          1) OVER (PARTITION BY well_id ORDER BY DATEPRD) AS prev_water_cut_pct,
+
+    -- Well-level baseline GOR (full history average, used as anomaly denominator)
+    AVG(gas_oil_ratio) OVER (PARTITION BY well_id)                              AS baseline_gor,
+
+    -- 7-day rolling averages
+    AVG(BORE_OIL_VOL)          OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS oil_vol_7d_avg,
+    AVG(BORE_GAS_VOL)          OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS gas_vol_7d_avg,
+    AVG(BORE_WAT_VOL)          OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS wat_vol_7d_avg,
+    AVG(AVG_DOWNHOLE_PRESSURE) OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS pressure_7d_avg,
+    AVG(water_cut_pct)         OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS water_cut_7d_avg,
+
+    -- 30-day rolling averages
+    AVG(BORE_OIL_VOL)          OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) AS oil_vol_30d_avg,
+    AVG(BORE_GAS_VOL)          OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) AS gas_vol_30d_avg,
+    AVG(AVG_DOWNHOLE_PRESSURE) OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) AS pressure_30d_avg,
+    AVG(water_cut_pct)         OVER (PARTITION BY well_id ORDER BY DATEPRD ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) AS water_cut_30d_avg,
+
+    -- Monthly cumulative volumes (resets each calendar month)
+    SUM(BORE_OIL_VOL) OVER (
+      PARTITION BY well_id, date_year, MONTH(DATEPRD)
+      ORDER BY DATEPRD
+      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS cum_oil_vol_monthly,
+    SUM(BORE_GAS_VOL) OVER (
+      PARTITION BY well_id, date_year, MONTH(DATEPRD)
+      ORDER BY DATEPRD
+      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS cum_gas_vol_monthly
+
+  FROM base
+)
+SELECT
+  DATEPRD,
+  well_id,
+  WELL_BORE_CODE,
+  date_year,
+
+  -- Raw volumes and operational metrics
+  BORE_OIL_VOL,
+  BORE_GAS_VOL,
+  BORE_WAT_VOL,
+  BORE_WI_VOL,
+  ON_STREAM_HRS,
+  AVG_DOWNHOLE_PRESSURE,
+  AVG_DOWNHOLE_TEMPERATURE,
+  AVG_ANNULUS_PRESS,
+  AVG_WHP_P,
+  AVG_WHT_P,
+
+  -- Silver KPIs passthrough
+  water_cut_pct,
+  gas_oil_ratio,
+  is_zero_prod_uptime,
+  is_pressure_valid,
+
+  -- Gold: 24-hour pressure change
+  CASE
+    WHEN AVG_DOWNHOLE_PRESSURE IS NOT NULL AND prev_pressure IS NOT NULL
+    THEN ABS(AVG_DOWNHOLE_PRESSURE - prev_pressure)
+    ELSE NULL
+  END AS pressure_delta_24h,
+
+  -- Gold: 7-day rolling averages
+  oil_vol_7d_avg,
+  gas_vol_7d_avg,
+  wat_vol_7d_avg,
+  pressure_7d_avg,
+  water_cut_7d_avg,
+
+  -- Gold: 30-day rolling averages
+  oil_vol_30d_avg,
+  gas_vol_30d_avg,
+  pressure_30d_avg,
+  water_cut_30d_avg,
+
+  -- Gold: monthly cumulative volumes
+  cum_oil_vol_monthly,
+  cum_gas_vol_monthly,
+
+  -- Gold: anomaly flags (per CLAUDE.md business rules)
+  CASE
+    WHEN AVG_DOWNHOLE_PRESSURE IS NOT NULL AND prev_pressure IS NOT NULL
+     AND ABS(AVG_DOWNHOLE_PRESSURE - prev_pressure) > 500
+    THEN TRUE ELSE FALSE
+  END AS is_anomaly_pressure,
+
+  CASE
+    WHEN water_cut_pct IS NOT NULL AND prev_water_cut_pct IS NOT NULL
+     AND water_cut_pct > 80 AND prev_water_cut_pct < 60
+    THEN TRUE ELSE FALSE
+  END AS is_water_cut_spike,
+
+  CASE
+    WHEN gas_oil_ratio IS NOT NULL
+     AND baseline_gor  IS NOT NULL
+     AND baseline_gor  > 0
+     AND gas_oil_ratio > (baseline_gor * 3)
+    THEN TRUE ELSE FALSE
+  END AS is_gor_anomaly,
+
+  current_timestamp() AS processed_ts
+
+FROM enriched
+"""
+
+SQL_ROW_COUNT = f"SELECT COUNT(*) FROM {TARGET_TABLE}"
+
+SQL_ANOMALY_SUMMARY = f"""
+  SELECT
+    well_id,
+    date_year,
+    COUNT(*)                                                    AS total_days,
+    SUM(CASE WHEN is_anomaly_pressure THEN 1 ELSE 0 END)        AS pressure_anomalies,
+    SUM(CASE WHEN is_water_cut_spike  THEN 1 ELSE 0 END)        AS water_cut_spikes,
+    SUM(CASE WHEN is_gor_anomaly      THEN 1 ELSE 0 END)        AS gor_anomalies,
+    SUM(CASE WHEN is_zero_prod_uptime THEN 1 ELSE 0 END)        AS zero_prod_days,
+    ROUND(AVG(pressure_30d_avg), 1)                             AS avg_pressure_30d,
+    ROUND(AVG(water_cut_30d_avg), 2)                            AS avg_water_cut_30d
+  FROM {TARGET_TABLE}
+  GROUP BY well_id, date_year
+  ORDER BY well_id, date_year
+"""
+
+
+def run():
+    print(f"\n{'='*60}")
+    print("Gold Layer — Production Daily KPIs")
+    print(f"{'='*60}")
+    print(f"Source : {SOURCE_TABLE}")
+    print(f"Target : {TARGET_TABLE}\n")
+
+    with sql.connect(
+        server_hostname=HOST,
+        http_path=HTTP_PATH,
+        access_token=TOKEN,
+    ) as conn:
+        with conn.cursor() as cur:
+
+            print("[1/5] Creating schema claudecatalog.gold (if not exists)...")
+            cur.execute(SQL_CREATE_SCHEMA)
+            print("      OK")
+
+            print(f"[2/5] Dropping existing table {TARGET_TABLE}...")
+            cur.execute(SQL_DROP_TABLE)
+            print("      OK")
+
+            print(f"[3/5] Creating {TARGET_TABLE}...")
+            print("      (CTAS with window functions — may take ~1-2 min)")
+            cur.execute(SQL_CREATE_TABLE)
+            print("      OK")
+
+            print("[4/5] Verifying row count...")
+            cur.execute(SQL_ROW_COUNT)
+            total = cur.fetchone()[0]
+            print(f"      Total rows : {total:,}")
+
+            print("[5/5] Anomaly summary by well/year...")
+            cur.execute(SQL_ANOMALY_SUMMARY)
+            rows = cur.fetchall()
+            print(f"\n{'Well':<8} {'Year':<6} {'Days':>5}  {'PressAnml':>10}  {'WCSpike':>8}  {'GORAnml':>8}  {'ZeroProd':>9}  {'P30d':>8}  {'WC30d':>7}")
+            print("-" * 82)
+            for row in rows:
+                well, yr, days, pa, wcs, ga, zp, p30, wc30 = row
+                p30_s  = f"{p30:.1f}"  if p30  is not None else "N/A"
+                wc30_s = f"{wc30:.2f}" if wc30 is not None else "N/A"
+                print(f"{str(well):<8} {str(yr):<6} {days:>5}  {int(pa):>10}  {int(wcs):>8}  {int(ga):>8}  {int(zp):>9}  {p30_s:>8}  {wc30_s:>7}")
+
+    print(f"\nDone. {TARGET_TABLE} is ready.\n")
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    except Exception as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+</file>
+
+<file path="gold/run_gold.py">
+#!/usr/bin/env python3
+"""
+Gold Layer Orchestrator
+Runs both gold scripts in sequence:
+  1. gold_production_daily  → claudecatalog.gold.production_daily
+  2. gold_ml_features       → claudecatalog.gold.ml_feature_store
+
+Usage:
+  python gold/run_gold.py
+  python gold/run_gold.py --only daily
+  python gold/run_gold.py --only features
+"""
+
+import sys
+import time
+import argparse
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+import gold_production_daily
+import gold_ml_features
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Gold layer orchestrator")
+    parser.add_argument(
+        "--only",
+        choices=["daily", "features"],
+        default=None,
+        help="Run only one script (default: run both)",
+    )
+    args = parser.parse_args()
+
+    steps = []
+    if args.only is None or args.only == "daily":
+        steps.append(("production_daily", gold_production_daily.run))
+    if args.only is None or args.only == "features":
+        steps.append(("ml_feature_store", gold_ml_features.run))
+
+    print(f"\n{'#'*60}")
+    print(f"  Gold Layer — Running {len(steps)} script(s)")
+    print(f"{'#'*60}")
+
+    overall_start = time.time()
+    failed = []
+
+    for name, fn in steps:
+        t0 = time.time()
+        try:
+            fn()
+            elapsed = time.time() - t0
+            print(f"  [{name}] completed in {elapsed:.1f}s")
+        except Exception as e:
+            elapsed = time.time() - t0
+            print(f"  [{name}] FAILED after {elapsed:.1f}s — {e}", file=sys.stderr)
+            failed.append(name)
+
+    total = time.time() - overall_start
+    print(f"\n{'#'*60}")
+    if failed:
+        print(f"  Gold layer finished with ERRORS in: {', '.join(failed)}")
+        print(f"  Total time: {total:.1f}s")
+        print(f"{'#'*60}\n")
+        sys.exit(1)
+    else:
+        print(f"  Gold layer complete. Total time: {total:.1f}s")
+        print(f"{'#'*60}\n")
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="infrastructure/docker-compose.yml">
+version: '3.8'
+
+# Shared config for all Airflow services
+x-airflow-common:
+  &airflow-common
+  image: apache/airflow:2.9.3-python3.11
+  env_file: ../.env
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
+    AIRFLOW__SCHEDULER__CATCHUP_BY_DEFAULT: 'false'
+    # Project root inside container — scripts resolve paths via this var
+    VOLVE_PROJECT_ROOT: /workspace
+    # Make the dags/ folder importable so 'from operators.x import y' works
+    PYTHONPATH: /opt/airflow/dags
+    # Install runtime deps (see airflow/requirements.txt)
+    _PIP_ADDITIONAL_REQUIREMENTS: "databricks-sql-connector python-dotenv mlflow numpy pandas"
+  volumes:
+    - ../airflow/dags:/opt/airflow/dags
+    - ../airflow/logs:/opt/airflow/logs
+    - ../airflow/plugins:/opt/airflow/plugins
+    # Mount entire project so scripts (bronze/silver/gold/ml) are accessible
+    - ..:/workspace
+  depends_on:
+    &airflow-depends-on
+    postgres:
+      condition: service_healthy
+
+services:
+
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: always
+
+  airflow-init:
+    <<: *airflow-common
+    command: bash -c "airflow db init && airflow users create --username airflow --firstname Volve --lastname Pipeline --role Admin --email admin@volve.local --password airflow"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: on-failure
+    depends_on:
+      <<: *airflow-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: on-failure
+    depends_on:
+      <<: *airflow-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-db-volume:
+</file>
+
+<file path="ingestion/nifi/DASHBOARD_SETUP.txt">
+=== NIFI DASHBOARD SETUP ===
+=== Kena buat dari browser, BUKAN terminal ===
+
+1. BUKA NIFI UI
+   https://localhost:8443/nifi
+   Username: admin | Password: adminpassword123
+
+2. IMPORT FLOW TEMPLATE
+   Upload → ingestion/nifi/templates/volve_router.xml
+   Drag template ke canvas
+
+3. CONFIGURE PROCESSOR SETTINGS
+   GetFile → Input Directory: /data/volve-source
+   PutS3Object → Bucket: volve-landing
+   PutS3Object → Credentials: AWS credentials dari environment
+
+4. START ALL PROCESSORS
+   Right-click canvas → Start
+
+5. MONITOR
+   View → Summary → check processor status
+   Green = running | Red = stopped | Yellow = warning
+</file>
+
+<file path="ingestion/nifi/HOW_IT_WORKS.txt">
+=== INGESTION LAYER — NiFi + Groovy ===
+
+TUJUAN:
+  Route 3 source formats (Excel, WITSML XML, LAS) ke S3 Bronze landing zone.
+
+FILES:
+  templates/volve_router.xml   - NiFi flow template (import ke NiFi UI)
+  scripts/route_witsml.groovy  - Groovy script untuk route WITSML XML by folder type
+
+FLOW ORDER:
+  GetFile/ListS3 → RouteOnAttribute (by extension) → ExecuteGroovyScript → PutS3Object
+
+CARA SETUP (BUKAN terminal — kena buat dari NiFi UI):
+  Lihat: DASHBOARD_SETUP.txt
+
+CARA TEST:
+  Drop sample file ke watched folder, check S3 output:
+  aws s3 ls s3://volve-landing/ --recursive
+</file>
+
+<file path="ml/training/HOW_IT_WORKS.txt">
+=== ML LAYER — MLflow in Databricks ===
+
+TUJUAN:
+  Train 3 models menggunakan Gold feature store.
+  Track experiments dengan MLflow.
+
+FILES:
+  train_pressure_prediction.py  - XGBoost: predict next_day_pressure
+  train_drilling_efficiency.py  - Random Forest: predict ROP efficiency
+  train_anomaly_detection.py    - Isolation Forest: detect anomalies
+
+MLflow EXPERIMENTS:
+  volve_pressure_prediction
+  volve_drilling_efficiency
+  volve_anomaly_detection
+
+CARA VIEW RESULTS:
+  Databricks UI → Machine Learning → Experiments
+
+LIHAT MLFLOW_SETUP.txt untuk model registry dan stage transitions
+</file>
+
+<file path="ml/training/MLFLOW_SETUP.txt">
+=== MLFLOW SETUP — Databricks UI ===
+
+1. VIEW EXPERIMENTS
+   Databricks → Machine Learning → Experiments
+
+2. REGISTER MODEL
+   Experiment run → Register Model
+   Name: volve_pressure_prediction (etc.)
+
+3. STAGE TRANSITIONS
+   Models → [model] → Version → Transition to Production
+
+4. LOAD MODEL IN NOTEBOOK
+   import mlflow
+   model = mlflow.sklearn.load_model("models:/volve_pressure_prediction/Production")
+</file>
+
+<file path="ml/run_ml.py">
+#!/usr/bin/env python3
+"""
+ML Layer Orchestrator
+Trains all 3 models in sequence, each logging to Databricks MLflow:
+  1. volve_pressure_prediction   (XGBoost Regressor)
+  2. volve_drilling_efficiency   (Random Forest Regressor)
+  3. volve_anomaly_detection     (Isolation Forest)
+
+Usage:
+  python ml/run_ml.py
+  python ml/run_ml.py --only pressure
+  python ml/run_ml.py --only drilling
+  python ml/run_ml.py --only anomaly
+"""
+
+import sys
+import time
+import argparse
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+import train_pressure_prediction
+import train_drilling_efficiency
+import train_anomaly_detection
+
+ALL_STEPS = [
+    ("pressure_prediction", train_pressure_prediction.run),
+    ("drilling_efficiency", train_drilling_efficiency.run),
+    ("anomaly_detection",   train_anomaly_detection.run),
+]
+
+KEY_MAP = {
+    "pressure": "pressure_prediction",
+    "drilling": "drilling_efficiency",
+    "anomaly":  "anomaly_detection",
+}
+
+
+def main():
+    parser = argparse.ArgumentParser(description="ML layer orchestrator")
+    parser.add_argument(
+        "--only",
+        choices=list(KEY_MAP.keys()),
+        default=None,
+        help="Train only one model (default: train all three)",
+    )
+    args = parser.parse_args()
+
+    if args.only:
+        steps = [(n, fn) for n, fn in ALL_STEPS if n == KEY_MAP[args.only]]
+    else:
+        steps = ALL_STEPS
+
+    print(f"\n{'#'*60}")
+    print(f"  ML Layer — Training {len(steps)} model(s)")
+    print(f"  (Trains locally in Codespaces, logs to Databricks MLflow)")
+    print(f"{'#'*60}")
+
+    overall_start = time.time()
+    failed = []
+
+    for name, fn in steps:
+        t0 = time.time()
+        try:
+            fn()
+            elapsed = time.time() - t0
+            print(f"\n  [{name}] completed in {elapsed:.1f}s")
+        except Exception as e:
+            elapsed = time.time() - t0
+            print(f"\n  [{name}] FAILED after {elapsed:.1f}s — {e}", file=sys.stderr)
+            failed.append(name)
+
+    total = time.time() - overall_start
+    print(f"\n{'#'*60}")
+    if failed:
+        print(f"  ML layer finished with ERRORS in: {', '.join(failed)}")
+        print(f"  Total time: {total:.1f}s")
+        print(f"{'#'*60}\n")
+        sys.exit(1)
+    else:
+        print(f"  ML layer complete. Total time: {total:.1f}s")
+        print(f"  View results: Databricks → Machine Learning → Experiments")
+        print(f"{'#'*60}\n")
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="ml/score_models.py">
+#!/usr/bin/env python3
+"""
+ML Scoring — Batch Inference
+Source  : claudecatalog.gold.ml_feature_store
+Output  : claudecatalog.gold.ml_predictions
+Models  : claudecatalog.ml.{volve_pressure_prediction,
+                             volve_drilling_efficiency,
+                             volve_anomaly_detection}
+
+Loads the latest registered model version from Databricks MLflow for each model,
+scores the feature store, and writes predictions to the Gold layer.
+
+Usage:
+  python ml/score_models.py
+  python ml/score_models.py --days 30
+"""
+
+import argparse
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from databricks import sql
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+HOST      = os.environ["DATABRICKS_HOST"].replace("https://", "")
+HTTP_PATH = os.environ["DATABRICKS_HTTP_PATH"]
+TOKEN     = os.environ["DATABRICKS_TOKEN"]
+
+FEATURE_TABLE     = "claudecatalog.gold.ml_feature_store"
+PREDICTIONS_TABLE = "claudecatalog.gold.ml_predictions"
+
+# Feature sets mirror the training scripts exactly
+PRESSURE_FEATURES = [
+    "pressure_lag1", "pressure_lag2", "pressure_lag3", "pressure_lag7",
+    "pressure_7d_avg", "pressure_30d_avg", "pressure_7d_std",
+    "water_cut_pct", "gas_oil_ratio", "water_cut_lag1", "gor_lag1",
+    "BORE_OIL_VOL", "BORE_GAS_VOL", "BORE_WAT_VOL", "ON_STREAM_HRS",
+    "AVG_WHP_P", "AVG_ANNULUS_PRESS",
+    "day_of_week", "month_num",
+    "total_md_m", "max_tvd_m",
+    "cum_oil_vol",
+]
+
+DRILLING_FEATURES = [
+    "BORE_OIL_VOL", "BORE_GAS_VOL", "BORE_WAT_VOL", "ON_STREAM_HRS",
+    "AVG_DOWNHOLE_PRESSURE", "AVG_WHP_P", "AVG_ANNULUS_PRESS",
+    "water_cut_pct", "gas_oil_ratio",
+    "pressure_7d_avg", "oil_vol_7d_avg", "water_cut_7d_avg",
+    "pressure_30d_avg", "oil_vol_30d_avg",
+    "pressure_7d_std", "oil_vol_7d_std",
+    "cum_oil_vol", "cum_gas_vol",
+    "total_md_m", "max_tvd_m", "avg_incl_deg", "avg_dls",
+    "day_of_week", "month_num",
+]
+
+ANOMALY_FEATURES = [
+    "pressure_delta_24h",
+    "water_cut_pct", "gas_oil_ratio",
+    "pressure_7d_avg", "pressure_7d_std",
+    "oil_vol_7d_avg", "water_cut_7d_avg",
+    "BORE_OIL_VOL", "BORE_GAS_VOL", "ON_STREAM_HRS",
+    "AVG_DOWNHOLE_PRESSURE", "AVG_WHP_P",
+]
+
+MODELS = [
+    {
+        "key":        "pressure",
+        "registry":   "claudecatalog.ml.volve_pressure_prediction",
+        "features":   PRESSURE_FEATURES,
+        "output_col": "pred_next_day_pressure",
+    },
+    {
+        "key":        "drilling",
+        "registry":   "claudecatalog.ml.volve_drilling_efficiency",
+        "features":   DRILLING_FEATURES,
+        "output_col": "pred_rop_efficiency_score",
+    },
+    {
+        "key":        "anomaly",
+        "registry":   "claudecatalog.ml.volve_anomaly_detection",
+        "features":   ANOMALY_FEATURES,
+        "output_col": "pred_is_anomaly",
+    },
+]
+
+# Union of all feature columns needed from the feature store
+ALL_FEATURE_COLS = list(
+    dict.fromkeys(PRESSURE_FEATURES + DRILLING_FEATURES + ANOMALY_FEATURES)
+)
+
+SQL_CREATE_PREDICTIONS = f"""
+CREATE TABLE IF NOT EXISTS {PREDICTIONS_TABLE} (
+    well_id                   STRING,
+    DATEPRD                   DATE,
+    pred_next_day_pressure    DOUBLE,
+    pred_rop_efficiency_score DOUBLE,
+    pred_is_anomaly           INT,
+    scored_at                 TIMESTAMP
+)
+USING DELTA
+COMMENT 'ML batch predictions — scored by Airflow run_ml_scoring task'
+PARTITIONED BY (well_id)
+"""
+
+
+def load_features(conn, days: int) -> pd.DataFrame:
+    cols = ", ".join(ALL_FEATURE_COLS + ["well_id", "DATEPRD"])
+    query = f"""
+    SELECT {cols}
+    FROM   {FEATURE_TABLE}
+    WHERE  DATEPRD >= DATE_SUB(CURRENT_DATE(), {days})
+    ORDER BY well_id, DATEPRD
+    """
+    print(f"  Loading last {days} days from {FEATURE_TABLE}...")
+    with conn.cursor() as cur:
+        cur.execute(query)
+        rows = cur.fetchall()
+        col_names = [d[0] for d in cur.description]
+    df = pd.DataFrame(rows, columns=col_names)
+    print(f"  Loaded {len(df):,} rows — wells: {sorted(df['well_id'].unique())}")
+    return df
+
+
+def score_one_model(model_cfg: dict, df: pd.DataFrame) -> pd.Series:
+    import mlflow.pyfunc
+
+    uri = f"models:/{model_cfg['registry']}/latest"
+    print(f"  Loading model: {uri}")
+    model = mlflow.pyfunc.load_model(uri)
+
+    X = df[model_cfg["features"]].copy()
+    X = X.fillna(X.median(numeric_only=True))
+
+    preds = model.predict(X)
+    return pd.Series(preds, index=df.index, name=model_cfg["output_col"])
+
+
+def write_predictions(conn, df: pd.DataFrame, scored_at: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute("CREATE SCHEMA IF NOT EXISTS claudecatalog.gold")
+        cur.execute(SQL_CREATE_PREDICTIONS)
+        # Remove existing predictions for the same date window before inserting
+        min_date = str(df["DATEPRD"].min())
+        cur.execute(
+            f"DELETE FROM {PREDICTIONS_TABLE} WHERE DATEPRD >= '{min_date}'"
+        )
+
+    output_cols = ["well_id", "DATEPRD",
+                   "pred_next_day_pressure", "pred_rop_efficiency_score",
+                   "pred_is_anomaly"]
+    for col in output_cols[2:]:
+        if col not in df.columns:
+            df[col] = None
+
+    rows = []
+    for _, row in df.iterrows():
+        pressure = float(row["pred_next_day_pressure"]) if pd.notna(row["pred_next_day_pressure"]) else None
+        drilling = float(row["pred_rop_efficiency_score"]) if pd.notna(row["pred_rop_efficiency_score"]) else None
+        anomaly  = int(row["pred_is_anomaly"]) if pd.notna(row["pred_is_anomaly"]) else None
+        rows.append((str(row["well_id"]), str(row["DATEPRD"]), pressure, drilling, anomaly, scored_at))
+
+    with conn.cursor() as cur:
+        cur.executemany(
+            f"INSERT INTO {PREDICTIONS_TABLE} VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+    print(f"  Written {len(rows):,} rows to {PREDICTIONS_TABLE}")
+
+
+def run(days: int = 30) -> None:
+    import mlflow
+
+    print(f"\n{'='*60}")
+    print(f"ML Scoring — Batch Inference")
+    print(f"Source  : {FEATURE_TABLE}")
+    print(f"Output  : {PREDICTIONS_TABLE}")
+    print(f"Window  : last {days} days")
+    print(f"{'='*60}")
+
+    mlflow.set_tracking_uri("databricks")
+    scored_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    with sql.connect(server_hostname=HOST, http_path=HTTP_PATH, access_token=TOKEN) as conn:
+        df = load_features(conn, days)
+
+        if df.empty:
+            print("  No feature data found — skipping scoring")
+            return
+
+        failed_models = []
+        for model_cfg in MODELS:
+            try:
+                preds = score_one_model(model_cfg, df)
+                df[model_cfg["output_col"]] = preds
+                print(f"  [{model_cfg['key']}] scored {len(preds):,} rows")
+            except Exception as e:
+                print(f"  [{model_cfg['key']}] SKIP — {e}", file=sys.stderr)
+                df[model_cfg["output_col"]] = None
+                failed_models.append(model_cfg["key"])
+
+        write_predictions(conn, df, scored_at)
+
+    # Summary
+    anomaly_col = "pred_is_anomaly"
+    if anomaly_col in df.columns:
+        n_anomalies = int(df[anomaly_col].eq(1).sum())
+        print(f"\n  Anomalies flagged : {n_anomalies} / {len(df)}")
+
+    if failed_models:
+        print(f"  Models skipped    : {', '.join(failed_models)}", file=sys.stderr)
+
+    print(f"\n  Scored at : {scored_at}")
+    print(f"{'='*60}\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="ML batch scoring — Volve pipeline")
+    parser.add_argument("--days", type=int, default=30,
+                        help="Score last N days from feature store (default: 30)")
+    args = parser.parse_args()
+    run(args.days)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+</file>
+
+<file path="ml/train_anomaly_detection.py">
+#!/usr/bin/env python3
+"""
+ML Model 3 — Anomaly Detection
+Algorithm : Isolation Forest (unsupervised)
+Label     : is_anomaly (evaluation only — NOT used in model.fit)
+Source    : claudecatalog.gold.ml_feature_store
+Tracking  : Databricks MLflow  (experiment: /Shared/volve_anomaly_detection)
+
+contamination is set from the observed anomaly rate in the dataset so the
+decision threshold matches real-world prevalence.
+Evaluation uses is_anomaly (from CLAUDE.md rules) as ground truth.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from dotenv import load_dotenv
+from databricks import sql
+
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+HOST      = os.environ["DATABRICKS_HOST"].replace("https://", "")
+HTTP_PATH = os.environ["DATABRICKS_HTTP_PATH"]
+TOKEN     = os.environ["DATABRICKS_TOKEN"]
+
+FEATURE_TABLE   = "claudecatalog.gold.ml_feature_store"
+MODEL_NAME      = "volve_anomaly_detection"
+EXPERIMENT_PATH = f"/Shared/{MODEL_NAME}"
+
+FEATURES = [
+    "pressure_delta_24h",
+    "water_cut_pct", "gas_oil_ratio",
+    "pressure_7d_avg", "pressure_7d_std",
+    "oil_vol_7d_avg", "water_cut_7d_avg",
+    "BORE_OIL_VOL", "BORE_GAS_VOL", "ON_STREAM_HRS",
+    "AVG_DOWNHOLE_PRESSURE", "AVG_WHP_P",
+]
+LABEL = "is_anomaly"
+
+BASE_PARAMS = {
+    "n_estimators": 200,
+    "max_samples":  "auto",
+    "random_state": 42,
+    # contamination set dynamically from observed anomaly rate
+}
+
+SQL_LOAD = f"""
+SELECT {', '.join(FEATURES + [LABEL, 'well_id', 'DATEPRD'])}
+FROM {FEATURE_TABLE}
+ORDER BY well_id, DATEPRD
+"""
+
+
+def load_features() -> pd.DataFrame:
+    print(f"  Loading features from {FEATURE_TABLE}...")
+    with sql.connect(server_hostname=HOST, http_path=HTTP_PATH, access_token=TOKEN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(SQL_LOAD)
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+    df = pd.DataFrame(rows, columns=cols)
+    print(f"  Loaded {len(df):,} rows")
+    return df
+
+
+def preprocess(df: pd.DataFrame):
+    X = df[FEATURES].copy()
+    y = df[LABEL].astype(int).copy()
+    X = X.fillna(X.median(numeric_only=True))
+    return X, y
+
+
+def run():
+    import mlflow
+    import mlflow.sklearn
+    from sklearn.ensemble import IsolationForest
+    from sklearn.metrics import (
+        precision_score, recall_score, f1_score, confusion_matrix,
+    )
+
+    print(f"\n{'='*60}")
+    print(f"Model : {MODEL_NAME}")
+    print(f"Algo  : Isolation Forest (unsupervised)")
+    print(f"Label : {LABEL}  (evaluation only, not used in fit)")
+    print(f"{'='*60}")
+
+    with sql.connect(server_hostname=HOST, http_path=HTTP_PATH, access_token=TOKEN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("CREATE SCHEMA IF NOT EXISTS claudecatalog.ml")
+
+    df = load_features()
+    X, y_true = preprocess(df)
+
+    anomaly_rate  = float(y_true.mean())
+    contamination = max(0.01, min(anomaly_rate, 0.5))
+    print(f"  Observed anomaly rate : {anomaly_rate:.4f} → contamination={contamination:.4f}")
+
+    params = {**BASE_PARAMS, "contamination": round(contamination, 4)}
+
+    mlflow.set_tracking_uri("databricks")
+    mlflow.set_experiment(EXPERIMENT_PATH)
+
+    with mlflow.start_run(run_name=f"{MODEL_NAME}_iforest"):
+        mlflow.log_params(params)
+        mlflow.log_param("features",             len(FEATURES))
+        mlflow.log_param("total_rows",           len(X))
+        mlflow.log_param("observed_anomaly_rate", round(anomaly_rate, 4))
+
+        model = IsolationForest(**params)
+        model.fit(X)
+
+        # Isolation Forest returns -1 for anomaly, +1 for normal → map to 0/1
+        raw_preds = model.predict(X)
+        y_pred    = (raw_preds == -1).astype(int)
+
+        precision = float(precision_score(y_true, y_pred, zero_division=0))
+        recall    = float(recall_score(y_true, y_pred, zero_division=0))
+        f1        = float(f1_score(y_true, y_pred, zero_division=0))
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+
+        mlflow.log_metric("precision",        round(precision, 4))
+        mlflow.log_metric("recall",           round(recall,    4))
+        mlflow.log_metric("f1_score",         round(f1,        4))
+        mlflow.log_metric("true_positives",   int(tp))
+        mlflow.log_metric("false_positives",  int(fp))
+        mlflow.log_metric("false_negatives",  int(fn))
+        mlflow.log_metric("true_negatives",   int(tn))
+
+        mlflow.sklearn.log_model(
+            model,
+            name="model",
+            input_example=X.iloc[:5],
+            registered_model_name=f"claudecatalog.ml.{MODEL_NAME}",
+        )
+
+        print(f"\n  Results:")
+        print(f"    Precision : {precision:.4f}")
+        print(f"    Recall    : {recall:.4f}")
+        print(f"    F1 Score  : {f1:.4f}")
+        print(f"    TP={tp}  FP={fp}  FN={fn}  TN={tn}")
+        print(f"\n  Logged to experiment : {EXPERIMENT_PATH}")
+        print(f"  Model registered     : {MODEL_NAME}")
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    except Exception as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+</file>
+
+<file path="ml/train_drilling_efficiency.py">
+#!/usr/bin/env python3
+"""
+ML Model 2 — Drilling Efficiency
+Algorithm : Random Forest Regressor
+Target    : rop_efficiency_score  (Sm3/hr per km wellbore depth)
+Source    : claudecatalog.gold.ml_feature_store
+Tracking  : Databricks MLflow  (experiment: /Shared/volve_drilling_efficiency)
+
+Split strategy: time-based 80/20.
+Feature importances logged as MLflow metrics for interpretability.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from dotenv import load_dotenv
+from databricks import sql
+
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+HOST      = os.environ["DATABRICKS_HOST"].replace("https://", "")
+HTTP_PATH = os.environ["DATABRICKS_HTTP_PATH"]
+TOKEN     = os.environ["DATABRICKS_TOKEN"]
+
+FEATURE_TABLE   = "claudecatalog.gold.ml_feature_store"
+MODEL_NAME      = "volve_drilling_efficiency"
+EXPERIMENT_PATH = f"/Shared/{MODEL_NAME}"
+
+FEATURES = [
+    "BORE_OIL_VOL", "BORE_GAS_VOL", "BORE_WAT_VOL", "ON_STREAM_HRS",
+    "AVG_DOWNHOLE_PRESSURE", "AVG_WHP_P", "AVG_ANNULUS_PRESS",
+    "water_cut_pct", "gas_oil_ratio",
+    "pressure_7d_avg", "oil_vol_7d_avg", "water_cut_7d_avg",
+    "pressure_30d_avg", "oil_vol_30d_avg",
+    "pressure_7d_std", "oil_vol_7d_std",
+    "cum_oil_vol", "cum_gas_vol",
+    "total_md_m", "max_tvd_m", "avg_incl_deg", "avg_dls",
+    "day_of_week", "month_num",
+]
+TARGET = "rop_efficiency_score"
+
+PARAMS = {
+    "n_estimators":    200,
+    "max_depth":       8,
+    "min_samples_leaf": 5,
+    "n_jobs":          -1,
+    "random_state":    42,
+}
+
+SQL_LOAD = f"""
+SELECT {', '.join(FEATURES + [TARGET, 'well_id', 'DATEPRD'])}
+FROM {FEATURE_TABLE}
+WHERE {TARGET} IS NOT NULL
+ORDER BY well_id, DATEPRD
+"""
+
+
+def load_features() -> pd.DataFrame:
+    print(f"  Loading features from {FEATURE_TABLE}...")
+    with sql.connect(server_hostname=HOST, http_path=HTTP_PATH, access_token=TOKEN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(SQL_LOAD)
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+    df = pd.DataFrame(rows, columns=cols)
+    print(f"  Loaded {len(df):,} rows, {df[TARGET].notna().sum():,} with valid target")
+    return df
+
+
+def preprocess(df: pd.DataFrame):
+    X = df[FEATURES].copy()
+    y = df[TARGET].copy()
+    X = X.fillna(X.median(numeric_only=True))
+    return X, y
+
+
+def time_split(df: pd.DataFrame, X, y, train_frac=0.8):
+    cutoff = int(len(df) * train_frac)
+    return (
+        X.iloc[:cutoff], X.iloc[cutoff:],
+        y.iloc[:cutoff], y.iloc[cutoff:],
+        df.iloc[cutoff:]["DATEPRD"].min(),
+    )
+
+
+def run():
+    import mlflow
+    import mlflow.sklearn
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+    print(f"\n{'='*60}")
+    print(f"Model : {MODEL_NAME}")
+    print(f"Algo  : Random Forest Regressor")
+    print(f"Target: {TARGET}")
+    print(f"{'='*60}")
+
+    with sql.connect(server_hostname=HOST, http_path=HTTP_PATH, access_token=TOKEN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("CREATE SCHEMA IF NOT EXISTS claudecatalog.ml")
+
+    df = load_features()
+    X, y = preprocess(df)
+    X_train, X_test, y_train, y_test, test_from = time_split(df, X, y)
+
+    print(f"  Train rows : {len(X_train):,}")
+    print(f"  Test rows  : {len(X_test):,}  (from {test_from})")
+
+    mlflow.set_tracking_uri("databricks")
+    mlflow.set_experiment(EXPERIMENT_PATH)
+
+    with mlflow.start_run(run_name=f"{MODEL_NAME}_rf"):
+        mlflow.log_params(PARAMS)
+        mlflow.log_param("features",       len(FEATURES))
+        mlflow.log_param("train_rows",     len(X_train))
+        mlflow.log_param("test_rows",      len(X_test))
+        mlflow.log_param("split_strategy", "time_based_80_20")
+
+        model = RandomForestRegressor(**PARAMS)
+        model.fit(X_train, y_train)
+
+        preds = model.predict(X_test)
+        rmse  = float(np.sqrt(mean_squared_error(y_test, preds)))
+        mae   = float(mean_absolute_error(y_test, preds))
+        r2    = float(r2_score(y_test, preds))
+
+        mlflow.log_metric("rmse", round(rmse, 6))
+        mlflow.log_metric("mae",  round(mae,  6))
+        mlflow.log_metric("r2",   round(r2,   4))
+
+        importances = (
+            pd.Series(model.feature_importances_, index=FEATURES)
+            .sort_values(ascending=False)
+        )
+        top5 = importances.head(5)
+        for feat, imp in top5.items():
+            mlflow.log_metric(f"feat_imp_{feat}", round(float(imp), 4))
+
+        mlflow.sklearn.log_model(
+            model,
+            name="model",
+            input_example=X_train.iloc[:5],
+            registered_model_name=f"claudecatalog.ml.{MODEL_NAME}",
+        )
+
+        print(f"\n  Results:")
+        print(f"    RMSE : {rmse:.6f}")
+        print(f"    MAE  : {mae:.6f}")
+        print(f"    R²   : {r2:.4f}")
+        print(f"\n  Top-5 features by importance:")
+        for feat, imp in top5.items():
+            print(f"    {feat:<30} {imp:.4f}")
+        print(f"\n  Logged to experiment : {EXPERIMENT_PATH}")
+        print(f"  Model registered     : {MODEL_NAME}")
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    except Exception as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+</file>
+
+<file path="ml/train_pressure_prediction.py">
+#!/usr/bin/env python3
+"""
+ML Model 1 — Pressure Prediction
+Algorithm : XGBoost Regressor
+Target    : next_day_pressure (continuous, psi)
+Source    : claudecatalog.gold.ml_feature_store
+Tracking  : Databricks MLflow  (experiment: /Shared/volve_pressure_prediction)
+
+Split strategy: time-based 80/20 to prevent data leakage across time.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from dotenv import load_dotenv
+from databricks import sql
+
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+HOST      = os.environ["DATABRICKS_HOST"].replace("https://", "")
+HTTP_PATH = os.environ["DATABRICKS_HTTP_PATH"]
+TOKEN     = os.environ["DATABRICKS_TOKEN"]
+
+FEATURE_TABLE   = "claudecatalog.gold.ml_feature_store"
+MODEL_NAME      = "volve_pressure_prediction"
+EXPERIMENT_PATH = f"/Shared/{MODEL_NAME}"
+
+FEATURES = [
+    "pressure_lag1", "pressure_lag2", "pressure_lag3", "pressure_lag7",
+    "pressure_7d_avg", "pressure_30d_avg", "pressure_7d_std",
+    "water_cut_pct", "gas_oil_ratio", "water_cut_lag1", "gor_lag1",
+    "BORE_OIL_VOL", "BORE_GAS_VOL", "BORE_WAT_VOL", "ON_STREAM_HRS",
+    "AVG_WHP_P", "AVG_ANNULUS_PRESS",
+    "day_of_week", "month_num",
+    "total_md_m", "max_tvd_m",
+    "cum_oil_vol",
+]
+TARGET = "next_day_pressure"
+
+PARAMS = {
+    "n_estimators":     200,
+    "max_depth":        5,
+    "learning_rate":    0.05,
+    "subsample":        0.8,
+    "colsample_bytree": 0.8,
+    "random_state":     42,
+}
+
+SQL_LOAD = f"""
+SELECT {', '.join(FEATURES + [TARGET, 'well_id', 'DATEPRD'])}
+FROM {FEATURE_TABLE}
+WHERE {TARGET} IS NOT NULL
+ORDER BY well_id, DATEPRD
+"""
+
+
+def load_features() -> pd.DataFrame:
+    print(f"  Loading features from {FEATURE_TABLE}...")
+    with sql.connect(server_hostname=HOST, http_path=HTTP_PATH, access_token=TOKEN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(SQL_LOAD)
+            rows = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+    df = pd.DataFrame(rows, columns=cols)
+    print(f"  Loaded {len(df):,} rows, {df[TARGET].notna().sum():,} with valid target")
+    return df
+
+
+def preprocess(df: pd.DataFrame):
+    X = df[FEATURES].copy()
+    y = df[TARGET].copy()
+    # Lag/rolling features are NULL for the first N rows — impute with column median
+    X = X.fillna(X.median(numeric_only=True))
+    return X, y
+
+
+def time_split(df: pd.DataFrame, X, y, train_frac=0.8):
+    cutoff = int(len(df) * train_frac)
+    return (
+        X.iloc[:cutoff], X.iloc[cutoff:],
+        y.iloc[:cutoff], y.iloc[cutoff:],
+        df.iloc[cutoff:]["DATEPRD"].min(),
+    )
+
+
+def run():
+    import mlflow
+    import mlflow.xgboost
+    from xgboost import XGBRegressor
+    from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+    print(f"\n{'='*60}")
+    print(f"Model : {MODEL_NAME}")
+    print(f"Algo  : XGBoost Regressor")
+    print(f"Target: {TARGET}")
+    print(f"{'='*60}")
+
+    with sql.connect(server_hostname=HOST, http_path=HTTP_PATH, access_token=TOKEN) as conn:
+        with conn.cursor() as cur:
+            cur.execute("CREATE SCHEMA IF NOT EXISTS claudecatalog.ml")
+
+    df = load_features()
+    X, y = preprocess(df)
+    X_train, X_test, y_train, y_test, test_from = time_split(df, X, y)
+
+    print(f"  Train rows : {len(X_train):,}")
+    print(f"  Test rows  : {len(X_test):,}  (from {test_from})")
+
+    mlflow.set_tracking_uri("databricks")
+    mlflow.set_experiment(EXPERIMENT_PATH)
+
+    with mlflow.start_run(run_name=f"{MODEL_NAME}_xgb"):
+        mlflow.log_params(PARAMS)
+        mlflow.log_param("features",        len(FEATURES))
+        mlflow.log_param("train_rows",      len(X_train))
+        mlflow.log_param("test_rows",       len(X_test))
+        mlflow.log_param("split_strategy",  "time_based_80_20")
+
+        model = XGBRegressor(**PARAMS)
+        model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
+
+        preds = model.predict(X_test)
+        rmse  = float(np.sqrt(mean_squared_error(y_test, preds)))
+        mae   = float(mean_absolute_error(y_test, preds))
+        r2    = float(r2_score(y_test, preds))
+
+        mlflow.log_metric("rmse", round(rmse, 4))
+        mlflow.log_metric("mae",  round(mae,  4))
+        mlflow.log_metric("r2",   round(r2,   4))
+
+        mlflow.xgboost.log_model(
+            model,
+            name="model",
+            input_example=X_train.iloc[:5],
+            registered_model_name=f"claudecatalog.ml.{MODEL_NAME}",
+        )
+
+        print(f"\n  Results:")
+        print(f"    RMSE : {rmse:.2f} psi")
+        print(f"    MAE  : {mae:.2f} psi")
+        print(f"    R²   : {r2:.4f}")
+        print(f"\n  Logged to experiment : {EXPERIMENT_PATH}")
+        print(f"  Model registered     : {MODEL_NAME}")
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    except Exception as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+</file>
+
+<file path="silver/notebooks/DATABRICKS_SETUP.txt">
+=== DATABRICKS SETUP — BUAT DI DASHBOARD ===
+
+1. CREATE CLUSTER
+   Compute → Create Compute
+   Runtime: 14.3 LTS ML | Auto-terminate: 30 min
+
+2. GENERATE TOKEN
+   Settings → Developer → Access tokens → Generate
+   Simpan: DATABRICKS_TOKEN=dapi_xxx
+
+3. SETUP AWS SECRETS
+   $ databricks secrets create-scope --scope aws
+   $ databricks secrets put --scope aws --key access-key --string-value "$(aws configure get aws_access_key_id)"
+   $ databricks secrets put --scope aws --key secret-key --string-value "$(aws configure get aws_secret_access_key)"
+
+4. UPLOAD NOTEBOOK
+   Workspace → Import → pilih .py file
+   ATAU: databricks workspace import silver_clean_production.py /Shared/volve/silver/
+
+5. RUN NOTEBOOK
+   Attach ke cluster → Run All
+
+TROUBLESHOOT:
+  Cluster terminated → Restart dari Compute tab
+  S3 access denied  → Check secrets scope
+</file>
+
+<file path="silver/notebooks/HOW_IT_WORKS.txt">
+=== SILVER LAYER — Databricks ===
+
+TUJUAN:
+  Clean, validate, deduplicate Bronze data. Add derived columns.
+  Output: ready for Gold layer.
+
+FILES:
+  silver_clean_production.py  - Clean production Excel data
+  silver_clean_witsml.py      - Clean WITSML XML data
+  silver_clean_welllogs.py    - Clean LAS well log data
+  silver_data_quality.py      - Run Great Expectations suites
+
+CARA RUN MANUAL:
+  python silver_clean_production.py --date 2013-01-15 --well F-1
+
+CARA DEBUG:
+  Check: airflow/logs/silver_clean_production/
+  Check: SELECT * FROM silver.dq_quarantine WHERE run_date = CURRENT_DATE
+
+LIHAT DATABRICKS_SETUP.txt untuk cara upload + run di Databricks UI
+</file>
+
+<file path="silver/run_silver.py">
+#!/usr/bin/env python3
+"""
+Silver Layer — Orchestrator
+Runs both Silver scripts in sequence.
+Run: python silver/run_silver.py
+"""
+
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).parent.parent
+
+SCRIPTS = [
+    ("Production", ROOT / "silver" / "silver_production.py"),
+    ("Trajectory", ROOT / "silver" / "silver_trajectory.py"),
+]
+
+
+def run():
+    print("\n" + "=" * 60)
+    print("Silver Layer — Full Run")
+    print("=" * 60)
+
+    for name, script in SCRIPTS:
+        print(f"\n>>> Running {name} ({script.name})...")
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            cwd=str(ROOT),
+        )
+        if result.returncode != 0:
+            print(f"\nFAILED: {script.name} exited with code {result.returncode}")
+            sys.exit(result.returncode)
+
+    print("\n" + "=" * 60)
+    print("Silver Layer — All scripts completed successfully.")
+    print("=" * 60 + "\n")
+
+
+if __name__ == "__main__":
+    run()
+</file>
+
+<file path="silver/silver_production.py">
+#!/usr/bin/env python3
+"""
+Silver Layer — Production Data
+Source : claudecatalog.bronze.raw_production
+Target : claudecatalog.silver.cleaned_production (Delta, partitioned by date_year + well_id)
+Run    : python silver/silver_production.py
+
+Transforms applied:
+  - DATEPRD → proper DATE type
+  - All numeric columns → DOUBLE (TRY_CAST; unparseable = NULL)
+  - Derived: water_cut_pct, gas_oil_ratio
+  - Quality flags: is_zero_prod_uptime, is_pressure_valid
+  - Dedup: keep latest ingestion_ts per (WELL_BORE_CODE, DATEPRD)
+  - Drop rows where DATEPRD or WELL_BORE_CODE is NULL
+"""
+
+import os
+import sys
+from pathlib import Path
+from dotenv import load_dotenv
+from databricks import sql
+
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+HOST      = os.environ["DATABRICKS_HOST"].replace("https://", "")
+HTTP_PATH = os.environ["DATABRICKS_HTTP_PATH"]
+TOKEN     = os.environ["DATABRICKS_TOKEN"]
+
+SOURCE_TABLE = "claudecatalog.bronze.raw_production"
+TARGET_TABLE = "claudecatalog.silver.cleaned_production"
+
+SQL_CREATE_SCHEMA = "CREATE SCHEMA IF NOT EXISTS claudecatalog.silver"
+SQL_DROP_TABLE    = f"DROP TABLE IF EXISTS {TARGET_TABLE}"
+
+# Silver production: type-cast source columns (UPPERCASE preserved), add derived snake_case columns.
+# TRY_CAST returns NULL on parse failure — safe for downstream DQ checks.
+# Dedup window: latest ingestion_ts wins per (WELL_BORE_CODE, DATEPRD).
+SQL_CREATE_TABLE = f"""
+CREATE TABLE {TARGET_TABLE}
+USING DELTA
+COMMENT 'Silver: cleaned production data. Types cast, derived KPIs added, duplicates removed.'
+PARTITIONED BY (date_year, well_id)
+AS
+WITH deduped AS (
+  SELECT
+    *,
+    ROW_NUMBER() OVER (
+      PARTITION BY WELL_BORE_CODE, DATEPRD
+      ORDER BY ingestion_ts DESC
+    ) AS _rn
+  FROM {SOURCE_TABLE}
+  WHERE DATEPRD IS NOT NULL
+    AND WELL_BORE_CODE IS NOT NULL
+    AND well_id IN ('F-1', 'F-11', 'F-12')
+),
+casted AS (
+  SELECT
+    -- Dates
+    TO_DATE(DATEPRD, 'dd-MMM-yy')                AS DATEPRD,
+
+    -- Well identifiers (source strings, preserved)
+    WELL_BORE_CODE,
+    NPD_WELL_BORE_CODE,
+    NPD_WELL_BORE_NAME,
+    NPD_FIELD_CODE,
+    NPD_FIELD_NAME,
+    NPD_FACILITY_CODE,
+    NPD_FACILITY_NAME,
+
+    -- Operational metrics (cast to DOUBLE)
+    TRY_CAST(ON_STREAM_HRS           AS DOUBLE)  AS ON_STREAM_HRS,
+    TRY_CAST(AVG_DOWNHOLE_PRESSURE   AS DOUBLE)  AS AVG_DOWNHOLE_PRESSURE,
+    TRY_CAST(AVG_DOWNHOLE_TEMPERATURE AS DOUBLE) AS AVG_DOWNHOLE_TEMPERATURE,
+    TRY_CAST(AVG_DP_TUBING           AS DOUBLE)  AS AVG_DP_TUBING,
+    TRY_CAST(AVG_ANNULUS_PRESS       AS DOUBLE)  AS AVG_ANNULUS_PRESS,
+    TRY_CAST(AVG_CHOKE_SIZE_P        AS DOUBLE)  AS AVG_CHOKE_SIZE_P,
+    AVG_CHOKE_UOM,
+    TRY_CAST(AVG_WHP_P               AS DOUBLE)  AS AVG_WHP_P,
+    TRY_CAST(AVG_WHT_P               AS DOUBLE)  AS AVG_WHT_P,
+    TRY_CAST(DP_CHOKE_SIZE           AS DOUBLE)  AS DP_CHOKE_SIZE,
+
+    -- Production volumes (cast to DOUBLE)
+    TRY_CAST(BORE_OIL_VOL  AS DOUBLE)            AS BORE_OIL_VOL,
+    TRY_CAST(BORE_GAS_VOL  AS DOUBLE)            AS BORE_GAS_VOL,
+    TRY_CAST(BORE_WAT_VOL  AS DOUBLE)            AS BORE_WAT_VOL,
+    TRY_CAST(BORE_WI_VOL   AS DOUBLE)            AS BORE_WI_VOL,
+
+    -- Categorical
+    FLOW_KIND,
+    WELL_TYPE,
+
+    -- Partition / identifier cols already clean from Bronze
+    well_id,
+    date_year,
+
+    -- Bronze metadata passthrough
+    ingestion_ts,
+    source_system,
+    source_file
+
+  FROM deduped
+  WHERE _rn = 1
+    AND TO_DATE(DATEPRD, 'dd-MMM-yy') IS NOT NULL
+)
+SELECT
+  *,
+
+  -- Derived KPIs (snake_case — new columns not in source)
+  CASE
+    WHEN (BORE_OIL_VOL + BORE_WAT_VOL) > 0
+    THEN BORE_WAT_VOL / (BORE_OIL_VOL + BORE_WAT_VOL) * 100.0
+    ELSE NULL
+  END                                             AS water_cut_pct,
+
+  CASE
+    WHEN BORE_OIL_VOL > 0
+    THEN BORE_GAS_VOL / BORE_OIL_VOL
+    ELSE NULL
+  END                                             AS gas_oil_ratio,
+
+  -- Quality flags
+  CASE
+    WHEN BORE_OIL_VOL IS NOT NULL
+     AND ON_STREAM_HRS IS NOT NULL
+     AND BORE_OIL_VOL = 0
+     AND ON_STREAM_HRS > 0
+    THEN TRUE
+    ELSE FALSE
+  END                                             AS is_zero_prod_uptime,
+
+  -- Pressure valid: 0–10000 psi; NULL pressure treated as invalid
+  CASE
+    WHEN AVG_DOWNHOLE_PRESSURE IS NOT NULL
+     AND AVG_DOWNHOLE_PRESSURE >= 0
+     AND AVG_DOWNHOLE_PRESSURE <= 10000
+    THEN TRUE
+    ELSE FALSE
+  END                                             AS is_pressure_valid,
+
+  current_timestamp()                             AS processed_ts
+
+FROM casted
+"""
+
+SQL_ROW_COUNT   = f"SELECT COUNT(*) FROM {TARGET_TABLE}"
+SQL_WELL_COUNTS = f"""
+  SELECT well_id, date_year,
+         COUNT(*)                                          AS rows,
+         ROUND(AVG(water_cut_pct), 2)                     AS avg_water_cut_pct,
+         ROUND(AVG(gas_oil_ratio), 4)                     AS avg_gor,
+         SUM(CASE WHEN is_zero_prod_uptime THEN 1 ELSE 0 END) AS zero_prod_days,
+         SUM(CASE WHEN NOT is_pressure_valid THEN 1 ELSE 0 END) AS invalid_pressure_rows
+  FROM {TARGET_TABLE}
+  GROUP BY well_id, date_year
+  ORDER BY well_id, date_year
+  LIMIT 30
+"""
+SQL_NULL_CHECK  = f"""
+  SELECT
+    SUM(CASE WHEN DATEPRD IS NULL THEN 1 ELSE 0 END)              AS null_date,
+    SUM(CASE WHEN BORE_OIL_VOL IS NULL THEN 1 ELSE 0 END)         AS null_oil_vol,
+    SUM(CASE WHEN AVG_DOWNHOLE_PRESSURE IS NULL THEN 1 ELSE 0 END) AS null_pressure
+  FROM {TARGET_TABLE}
+"""
+
+
+def run():
+    print(f"\n{'='*60}")
+    print("Silver Layer — Production Data")
+    print(f"{'='*60}")
+    print(f"Source : {SOURCE_TABLE}")
+    print(f"Target : {TARGET_TABLE}\n")
+
+    with sql.connect(
+        server_hostname=HOST,
+        http_path=HTTP_PATH,
+        access_token=TOKEN,
+    ) as conn:
+        with conn.cursor() as cur:
+
+            print("[1/5] Creating schema claudecatalog.silver (if not exists)...")
+            cur.execute(SQL_CREATE_SCHEMA)
+            print("      OK")
+
+            print(f"[2/5] Dropping existing table {TARGET_TABLE}...")
+            cur.execute(SQL_DROP_TABLE)
+            print("      OK")
+
+            print(f"[3/5] Creating {TARGET_TABLE}...")
+            print("      (CTAS with dedup + type casting — may take ~1 min)")
+            cur.execute(SQL_CREATE_TABLE)
+            print("      OK")
+
+            print("[4/5] Verifying row counts...")
+            cur.execute(SQL_ROW_COUNT)
+            total = cur.fetchone()[0]
+            print(f"      Total rows : {total:,}")
+
+            print("[5/5] Quality summary by well/year...")
+            cur.execute(SQL_WELL_COUNTS)
+            rows = cur.fetchall()
+            print(f"\n{'Well':<8} {'Year':<6} {'Rows':>6}  {'AvgWC%':>8}  {'AvgGOR':>8}  {'ZeroProd':>9}  {'BadPress':>9}")
+            print("-" * 70)
+            for row in rows:
+                well_id, date_year, count, avg_wc, avg_gor, zp, bp = row
+                avg_wc_str  = f"{avg_wc:.2f}"  if avg_wc  is not None else "N/A"
+                avg_gor_str = f"{avg_gor:.4f}" if avg_gor is not None else "N/A"
+                print(f"{str(well_id):<8} {str(date_year):<6} {count:>6}  {avg_wc_str:>8}  {avg_gor_str:>8}  {int(zp):>9}  {int(bp):>9}")
+
+            print("\n      NULL checks:")
+            cur.execute(SQL_NULL_CHECK)
+            null_row = cur.fetchone()
+            print(f"      null_date={null_row[0]}  null_oil_vol={null_row[1]}  null_pressure={null_row[2]}")
+
+    print(f"\nDone. {TARGET_TABLE} is ready.\n")
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    except Exception as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+</file>
+
+<file path="silver/silver_trajectory.py">
+#!/usr/bin/env python3
+"""
+Silver Layer — WITSML Trajectory Data
+Source : claudecatalog.bronze.raw_witsml_trajectory
+Target : claudecatalog.silver.cleaned_trajectory (Delta, partitioned by well_id)
+Run    : python silver/silver_trajectory.py
+
+Transforms applied:
+  - Explode trajectory_stations_json (JSON array) → one row per survey station
+  - Extract md, incl, azi, tvd, dispNs, dispEw, dls from each station struct
+  - All measurements cast to DOUBLE; NULL on parse failure
+  - Quality flags: is_md_valid, is_incl_valid, is_azi_valid
+"""
+
+import os
+import sys
+from pathlib import Path
+from dotenv import load_dotenv
+from databricks import sql
+
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+HOST      = os.environ["DATABRICKS_HOST"].replace("https://", "")
+HTTP_PATH = os.environ["DATABRICKS_HTTP_PATH"]
+TOKEN     = os.environ["DATABRICKS_TOKEN"]
+
+SOURCE_TABLE = "claudecatalog.bronze.raw_witsml_trajectory"
+TARGET_TABLE = "claudecatalog.silver.cleaned_trajectory"
+
+SQL_CREATE_SCHEMA = "CREATE SCHEMA IF NOT EXISTS claudecatalog.silver"
+SQL_DROP_TABLE    = f"DROP TABLE IF EXISTS {TARGET_TABLE}"
+
+# WITSML trajectory station JSON structure (from TO_JSON on Spark XML parse):
+#   [{"_uid":"1","md":{"_VALUE":"0.0","_uom":"m"},"incl":{"_VALUE":"0.0","_uom":"dega"}, ...}, ...]
+#
+# from_json() schema must match this shape. Fields absent in some versions → NULL (lenient parsing).
+# Each measurement column is STRUCT<_VALUE: STRING, _uom: STRING>.
+STATION_SCHEMA = """ARRAY<STRUCT<
+  _uid: STRING,
+  md:        STRUCT<_VALUE: STRING, _uom: STRING>,
+  incl:      STRUCT<_VALUE: STRING, _uom: STRING>,
+  azi:       STRUCT<_VALUE: STRING, _uom: STRING>,
+  tvd:       STRUCT<_VALUE: STRING, _uom: STRING>,
+  dispNs:    STRUCT<_VALUE: STRING, _uom: STRING>,
+  dispEw:    STRUCT<_VALUE: STRING, _uom: STRING>,
+  dls:       STRUCT<_VALUE: STRING, _uom: STRING>,
+  rateTurn:  STRUCT<_VALUE: STRING, _uom: STRING>,
+  rateBuild: STRUCT<_VALUE: STRING, _uom: STRING>
+>>"""
+
+SQL_CREATE_TABLE = f"""
+CREATE TABLE {TARGET_TABLE}
+USING DELTA
+COMMENT 'Silver: one row per WITSML trajectory survey station. Exploded from bronze JSON array, measurements cast to DOUBLE.'
+PARTITIONED BY (well_id)
+AS
+WITH parsed AS (
+  SELECT
+    trajectory_uid,
+    uid_well,
+    uid_wellbore,
+    trajectory_name,
+    name_well,
+    name_wellbore,
+    well_id,
+    source_path,
+    ingestion_ts,
+    EXPLODE(
+      from_json(trajectory_stations_json, '{STATION_SCHEMA}')
+    ) AS station
+  FROM {SOURCE_TABLE}
+  WHERE trajectory_stations_json IS NOT NULL
+    AND trajectory_stations_json != 'null'
+)
+SELECT
+  -- Trajectory identifiers
+  trajectory_uid,
+  uid_well,
+  uid_wellbore,
+  trajectory_name,
+  name_well,
+  name_wellbore,
+  well_id,
+  station._uid                                    AS station_uid,
+
+  -- Survey measurements (snake_case — new Silver columns)
+  TRY_CAST(station.md._VALUE       AS DOUBLE)     AS md_m,
+  station.md._uom                                 AS md_uom,
+  TRY_CAST(station.incl._VALUE     AS DOUBLE)     AS incl_deg,
+  TRY_CAST(station.azi._VALUE      AS DOUBLE)     AS azi_deg,
+  TRY_CAST(station.tvd._VALUE      AS DOUBLE)     AS tvd_m,
+  TRY_CAST(station.dispNs._VALUE   AS DOUBLE)     AS disp_ns_m,
+  TRY_CAST(station.dispEw._VALUE   AS DOUBLE)     AS disp_ew_m,
+  TRY_CAST(station.dls._VALUE      AS DOUBLE)     AS dls_deg_per_30m,
+  TRY_CAST(station.rateTurn._VALUE AS DOUBLE)     AS rate_turn,
+  TRY_CAST(station.rateBuild._VALUE AS DOUBLE)    AS rate_build,
+
+  -- Quality flags
+  CASE
+    WHEN TRY_CAST(station.md._VALUE AS DOUBLE) IS NOT NULL
+     AND TRY_CAST(station.md._VALUE AS DOUBLE) >= 0
+    THEN TRUE ELSE FALSE
+  END                                             AS is_md_valid,
+
+  CASE
+    WHEN TRY_CAST(station.incl._VALUE AS DOUBLE) IS NOT NULL
+     AND TRY_CAST(station.incl._VALUE AS DOUBLE) BETWEEN 0 AND 180
+    THEN TRUE ELSE FALSE
+  END                                             AS is_incl_valid,
+
+  CASE
+    WHEN TRY_CAST(station.azi._VALUE AS DOUBLE) IS NOT NULL
+     AND TRY_CAST(station.azi._VALUE AS DOUBLE) BETWEEN 0 AND 360
+    THEN TRUE ELSE FALSE
+  END                                             AS is_azi_valid,
+
+  -- Metadata
+  source_path,
+  ingestion_ts,
+  current_timestamp()                             AS processed_ts
+
+FROM parsed
+WHERE station IS NOT NULL
+"""
+
+SQL_ROW_COUNT       = f"SELECT COUNT(*) FROM {TARGET_TABLE}"
+SQL_WELL_SUMMARY    = f"""
+  SELECT
+    well_id,
+    COUNT(DISTINCT trajectory_uid)                      AS trajectories,
+    COUNT(*)                                            AS total_stations,
+    ROUND(MIN(md_m), 1)                                 AS min_md_m,
+    ROUND(MAX(md_m), 1)                                 AS max_md_m,
+    ROUND(MAX(tvd_m), 1)                                AS max_tvd_m,
+    SUM(CASE WHEN NOT is_md_valid   THEN 1 ELSE 0 END)  AS invalid_md,
+    SUM(CASE WHEN NOT is_incl_valid THEN 1 ELSE 0 END)  AS invalid_incl,
+    SUM(CASE WHEN NOT is_azi_valid  THEN 1 ELSE 0 END)  AS invalid_azi
+  FROM {TARGET_TABLE}
+  GROUP BY well_id
+  ORDER BY well_id
+"""
+
+
+def run():
+    print(f"\n{'='*60}")
+    print("Silver Layer — WITSML Trajectory Data")
+    print(f"{'='*60}")
+    print(f"Source : {SOURCE_TABLE}")
+    print(f"Target : {TARGET_TABLE}\n")
+
+    with sql.connect(
+        server_hostname=HOST,
+        http_path=HTTP_PATH,
+        access_token=TOKEN,
+    ) as conn:
+        with conn.cursor() as cur:
+
+            print("[1/5] Creating schema claudecatalog.silver (if not exists)...")
+            cur.execute(SQL_CREATE_SCHEMA)
+            print("      OK")
+
+            print(f"[2/5] Dropping existing table {TARGET_TABLE}...")
+            cur.execute(SQL_DROP_TABLE)
+            print("      OK")
+
+            print(f"[3/5] Creating {TARGET_TABLE}...")
+            print("      (Exploding JSON array + casting — may take ~1 min)")
+            cur.execute(SQL_CREATE_TABLE)
+            print("      OK")
+
+            print("[4/5] Verifying row counts...")
+            cur.execute(SQL_ROW_COUNT)
+            total = cur.fetchone()[0]
+            print(f"      Total survey stations : {total:,}")
+
+            print("[5/5] Quality summary by well...")
+            cur.execute(SQL_WELL_SUMMARY)
+            rows = cur.fetchall()
+            print(f"\n{'Well':<8} {'Trajs':>6}  {'Stations':>9}  {'MinMD':>8}  {'MaxMD':>8}  {'MaxTVD':>8}  {'!MD':>5}  {'!Inc':>5}  {'!Azi':>5}")
+            print("-" * 80)
+            for row in rows:
+                well_id, trajs, stations, min_md, max_md, max_tvd, bad_md, bad_incl, bad_azi = row
+                min_md_s  = f"{min_md:.1f}"  if min_md  is not None else "N/A"
+                max_md_s  = f"{max_md:.1f}"  if max_md  is not None else "N/A"
+                max_tvd_s = f"{max_tvd:.1f}" if max_tvd is not None else "N/A"
+                print(f"{str(well_id):<8} {int(trajs):>6}  {int(stations):>9}  {min_md_s:>8}  {max_md_s:>8}  {max_tvd_s:>8}  {int(bad_md):>5}  {int(bad_incl):>5}  {int(bad_azi):>5}")
+
+    print(f"\nDone. {TARGET_TABLE} is ready.\n")
+
+
+if __name__ == "__main__":
+    try:
+        run()
+    except Exception as e:
+        print(f"\nERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+</file>
+
+<file path="snowflake/create_views.py">
+"""
+Phase 8 — Snowflake Serving Layer
+create_views.py: Create 5 BI reporting views in VOLVE_DB.SERVING.
+Run after load_snowflake.py has populated the staging tables.
+"""
+
+import os
+import sys
+import logging
+import snowflake.connector
+from dotenv import load_dotenv
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
+
+
+# ── View DDL ──────────────────────────────────────────────────────────────────
+
+VIEWS = {
+    "vw_daily_production_kpis": """
+        CREATE OR REPLACE VIEW VOLVE_DB.SERVING.vw_daily_production_kpis AS
+        SELECT
+            well_id,
+            DATEPRD,
+            date_year,
+            BORE_OIL_VOL,
+            BORE_GAS_VOL,
+            BORE_WAT_VOL,
+            ON_STREAM_HRS,
+            AVG_DOWNHOLE_PRESSURE,
+            water_cut_pct,
+            gas_oil_ratio,
+            pressure_delta_24h,
+            oil_vol_7d_avg,
+            oil_vol_30d_avg,
+            gas_vol_7d_avg,
+            gas_vol_30d_avg,
+            water_cut_7d_avg,
+            water_cut_30d_avg,
+            pressure_7d_avg,
+            pressure_30d_avg,
+            cum_oil_vol_monthly,
+            cum_gas_vol_monthly,
+            is_anomaly_pressure,
+            is_zero_prod_uptime,
+            is_water_cut_spike,
+            is_gor_anomaly
+        FROM VOLVE_DB.SERVING.production_daily
+        ORDER BY well_id, DATEPRD
+    """,
+
+    "vw_anomaly_alerts": """
+        CREATE OR REPLACE VIEW VOLVE_DB.SERVING.vw_anomaly_alerts AS
+        SELECT
+            well_id,
+            DATEPRD,
+            AVG_DOWNHOLE_PRESSURE,
+            pressure_delta_24h,
+            water_cut_pct,
+            gas_oil_ratio,
+            is_anomaly_pressure,
+            is_zero_prod_uptime,
+            is_water_cut_spike,
+            is_gor_anomaly,
+            (CASE WHEN is_anomaly_pressure  THEN 1 ELSE 0 END +
+             CASE WHEN is_zero_prod_uptime  THEN 1 ELSE 0 END +
+             CASE WHEN is_water_cut_spike   THEN 1 ELSE 0 END +
+             CASE WHEN is_gor_anomaly       THEN 1 ELSE 0 END) AS anomaly_count,
+            CASE
+                WHEN is_anomaly_pressure AND is_water_cut_spike THEN 'CRITICAL'
+                WHEN is_anomaly_pressure OR is_water_cut_spike OR is_gor_anomaly THEN 'HIGH'
+                WHEN is_zero_prod_uptime THEN 'MEDIUM'
+                ELSE 'LOW'
+            END AS alert_severity
+        FROM VOLVE_DB.SERVING.production_daily
+        WHERE is_anomaly_pressure
+           OR is_zero_prod_uptime
+           OR is_water_cut_spike
+           OR is_gor_anomaly
+        ORDER BY DATEPRD DESC, alert_severity
+    """,
+
+    "vw_production_trends": """
+        CREATE OR REPLACE VIEW VOLVE_DB.SERVING.vw_production_trends AS
+        SELECT
+            well_id,
+            DATE_TRUNC('month', DATEPRD)    AS production_month,
+            date_year,
+            COUNT(*)                        AS production_days,
+            SUM(BORE_OIL_VOL)               AS total_oil_vol,
+            SUM(BORE_GAS_VOL)               AS total_gas_vol,
+            SUM(BORE_WAT_VOL)               AS total_wat_vol,
+            SUM(ON_STREAM_HRS)              AS total_on_stream_hrs,
+            AVG(water_cut_pct)              AS avg_water_cut_pct,
+            AVG(gas_oil_ratio)              AS avg_gor,
+            AVG(AVG_DOWNHOLE_PRESSURE)      AS avg_pressure,
+            MAX(cum_oil_vol_monthly)        AS cum_oil_vol_monthly,
+            MAX(cum_gas_vol_monthly)        AS cum_gas_vol_monthly,
+            SUM(CASE WHEN is_anomaly_pressure THEN 1 ELSE 0 END) AS anomaly_days
+        FROM VOLVE_DB.SERVING.production_daily
+        GROUP BY well_id, DATE_TRUNC('month', DATEPRD), date_year
+        ORDER BY well_id, production_month
+    """,
+
+    "vw_ml_predictions": """
+        CREATE OR REPLACE VIEW VOLVE_DB.SERVING.vw_ml_predictions AS
+        SELECT
+            p.well_id,
+            p.DATEPRD,
+            p.AVG_DOWNHOLE_PRESSURE                             AS actual_pressure,
+            m.predicted_pressure,
+            ABS(p.AVG_DOWNHOLE_PRESSURE - m.predicted_pressure) AS pressure_abs_error,
+            m.rop_efficiency_score,
+            m.anomaly_score,
+            m.is_predicted_anomaly,
+            p.is_anomaly_pressure                               AS actual_anomaly,
+            CASE
+                WHEN m.is_predicted_anomaly AND p.is_anomaly_pressure THEN 'TRUE_POS'
+                WHEN m.is_predicted_anomaly AND NOT p.is_anomaly_pressure THEN 'FALSE_POS'
+                WHEN NOT m.is_predicted_anomaly AND p.is_anomaly_pressure THEN 'FALSE_NEG'
+                ELSE 'TRUE_NEG'
+            END                                                 AS prediction_result,
+            m.prediction_date
+        FROM VOLVE_DB.SERVING.production_daily p
+        LEFT JOIN VOLVE_DB.SERVING.ml_predictions m
+            ON p.well_id = m.well_id AND p.DATEPRD = m.DATEPRD
+        ORDER BY p.well_id, p.DATEPRD
+    """,
+
+    "vw_well_comparison": """
+        CREATE OR REPLACE VIEW VOLVE_DB.SERVING.vw_well_comparison AS
+        SELECT
+            well_id,
+            date_year,
+            COUNT(*)                                                    AS active_days,
+            SUM(BORE_OIL_VOL)                                           AS total_oil_vol,
+            SUM(BORE_GAS_VOL)                                           AS total_gas_vol,
+            SUM(BORE_WAT_VOL)                                           AS total_wat_vol,
+            SUM(ON_STREAM_HRS)                                          AS total_on_stream_hrs,
+            AVG(water_cut_pct)                                          AS avg_water_cut_pct,
+            AVG(gas_oil_ratio)                                          AS avg_gor,
+            AVG(AVG_DOWNHOLE_PRESSURE)                                  AS avg_pressure,
+            AVG(oil_vol_30d_avg)                                        AS avg_30d_oil_vol,
+            AVG(pressure_30d_avg)                                       AS avg_30d_pressure,
+            SUM(CASE WHEN is_anomaly_pressure  THEN 1 ELSE 0 END)       AS anomaly_pressure_days,
+            SUM(CASE WHEN is_water_cut_spike   THEN 1 ELSE 0 END)       AS water_cut_spike_days,
+            SUM(CASE WHEN is_gor_anomaly       THEN 1 ELSE 0 END)       AS gor_anomaly_days,
+            SUM(CASE WHEN is_zero_prod_uptime  THEN 1 ELSE 0 END)       AS zero_prod_uptime_days,
+            ROUND(
+                SUM(CASE WHEN is_anomaly_pressure THEN 1 ELSE 0 END) * 100.0 / COUNT(*),
+                2
+            )                                                           AS anomaly_pct
+        FROM VOLVE_DB.SERVING.production_daily
+        GROUP BY well_id, date_year
+        ORDER BY well_id, date_year
+    """,
+}
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def get_conn():
+    return snowflake.connector.connect(
+        account=os.environ["SNOWFLAKE_ACCOUNT"],
+        user=os.environ["SNOWFLAKE_USER"],
+        password=os.environ["SNOWFLAKE_PASSWORD"],
+        warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
+        database="VOLVE_DB",
+        schema="SERVING",
+    )
+
+
+def create_views():
+    log.info("=== Phase 8 — Create BI Views in VOLVE_DB.SERVING ===")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        for view_name, ddl in VIEWS.items():
+            cur.execute(ddl.strip())
+            log.info("  OK  %s", view_name)
+        log.info("All 5 views created.")
+    finally:
+        cur.close()
+        conn.close()
+
+
+if __name__ == "__main__":
+    try:
+        create_views()
+    except Exception as exc:
+        log.error("View creation failed: %s", exc)
+        sys.exit(1)
+</file>
+
+<file path="snowflake/load_snowflake.py">
+"""
+Phase 8 — Snowflake Serving Layer
+load_snowflake.py: ETL from Databricks Gold tables → Snowflake SERVING.
+Run after setup_snowflake.py has created the target tables.
+"""
+
+import os
+import sys
+import logging
+import pandas as pd
+import snowflake.connector
+from snowflake.connector.pandas_tools import write_pandas
+from databricks import sql as dbsql
+from dotenv import load_dotenv
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
+
+
+# ── Databricks ────────────────────────────────────────────────────────────────
+
+def _databricks_conn():
+    return dbsql.connect(
+        server_hostname=os.environ["DATABRICKS_HOST"].replace("https://", ""),
+        http_path=os.environ["DATABRICKS_HTTP_PATH"],
+        access_token=os.environ["DATABRICKS_TOKEN"],
+    )
+
+
+def fetch_databricks(query: str) -> pd.DataFrame:
+    conn = _databricks_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query)
+            arrow_table = cur.fetchall_arrow()
+            return arrow_table.to_pandas()
+    finally:
+        conn.close()
+
+
+# ── Snowflake ─────────────────────────────────────────────────────────────────
+
+def _snowflake_conn():
+    return snowflake.connector.connect(
+        account=os.environ["SNOWFLAKE_ACCOUNT"],
+        user=os.environ["SNOWFLAKE_USER"],
+        password=os.environ["SNOWFLAKE_PASSWORD"],
+        warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
+        database="VOLVE_DB",
+        schema="SERVING",
+    )
+
+
+def _truncate_and_load(sf_conn, df: pd.DataFrame, table: str, label: str):
+    # Snowflake unquoted identifiers are uppercase; match DataFrame columns
+    df = df.copy()
+    df.columns = [c.upper() for c in df.columns]
+
+    cur = sf_conn.cursor()
+    cur.execute(f"TRUNCATE TABLE VOLVE_DB.SERVING.{table}")
+    cur.close()
+
+    success, nchunks, nrows, _ = write_pandas(
+        sf_conn, df, table.upper(), quote_identifiers=False
+    )
+    log.info("  %-28s  %d rows  (%d chunks)  success=%s", label, nrows, nchunks, success)
+
+
+# ── Queries ───────────────────────────────────────────────────────────────────
+
+QUERY_PRODUCTION = """
+SELECT
+    well_id,
+    DATEPRD,
+    date_year,
+    WELL_BORE_CODE,
+    BORE_OIL_VOL,
+    BORE_GAS_VOL,
+    BORE_WAT_VOL,
+    ON_STREAM_HRS,
+    AVG_DOWNHOLE_PRESSURE,
+    water_cut_pct,
+    gas_oil_ratio,
+    pressure_delta_24h,
+    is_anomaly_pressure,
+    is_zero_prod_uptime,
+    is_water_cut_spike,
+    is_gor_anomaly,
+    oil_vol_7d_avg,
+    oil_vol_30d_avg,
+    gas_vol_7d_avg,
+    gas_vol_30d_avg,
+    water_cut_7d_avg,
+    water_cut_30d_avg,
+    pressure_7d_avg,
+    pressure_30d_avg,
+    cum_oil_vol_monthly,
+    cum_gas_vol_monthly
+FROM claudecatalog.gold.production_daily
+ORDER BY well_id, DATEPRD
+"""
+
+QUERY_ML = """
+SELECT
+    well_id,
+    DATEPRD,
+    predicted_pressure,
+    rop_efficiency_score,
+    anomaly_score,
+    is_predicted_anomaly,
+    prediction_date
+FROM claudecatalog.gold.ml_predictions
+ORDER BY well_id, DATEPRD
+"""
+
+
+# ── Load functions ────────────────────────────────────────────────────────────
+
+def load_production_daily(sf_conn):
+    log.info("Fetching production_daily from Databricks …")
+    df = fetch_databricks(QUERY_PRODUCTION)
+    log.info("  Fetched %d rows from claudecatalog.gold.production_daily", len(df))
+    _truncate_and_load(sf_conn, df, "production_daily", "SERVING.production_daily")
+
+
+def load_ml_predictions(sf_conn):
+    log.info("Fetching ml_predictions from Databricks …")
+    try:
+        df = fetch_databricks(QUERY_ML)
+        log.info("  Fetched %d rows from claudecatalog.gold.ml_predictions", len(df))
+        _truncate_and_load(sf_conn, df, "ml_predictions", "SERVING.ml_predictions")
+    except Exception as exc:
+        # ml_predictions created by Airflow Task 9 — may not exist yet
+        log.warning("  ml_predictions not available (Airflow Task 9 not run yet): %s", exc)
+
+
+def load():
+    log.info("=== Phase 8 — Load: Databricks Gold → Snowflake ===")
+    sf_conn = _snowflake_conn()
+    try:
+        load_production_daily(sf_conn)
+        load_ml_predictions(sf_conn)
+        log.info("Load complete.")
+    finally:
+        sf_conn.close()
+
+
+if __name__ == "__main__":
+    try:
+        load()
+    except Exception as exc:
+        log.error("Load failed: %s", exc)
+        sys.exit(1)
+</file>
+
+<file path="snowflake/requirements.txt">
+snowflake-connector-python[pandas]>=3.12.0
+databricks-sql-connector==3.3.0
+python-dotenv==1.0.0
+pandas>=2.1.4
+pyarrow>=14.0.2
+</file>
+
+<file path="snowflake/run_snowflake.py">
+"""
+Phase 8 — Snowflake Serving Layer
+run_snowflake.py: Orchestrator — setup tables → load data → create views.
+
+Usage:
+  python run_snowflake.py              # full pipeline
+  python run_snowflake.py --only setup
+  python run_snowflake.py --only load
+  python run_snowflake.py --only views
+"""
+
+import sys
+import argparse
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Snowflake Serving Layer orchestrator")
+    parser.add_argument(
+        "--only",
+        choices=["setup", "load", "views"],
+        help="Run a single step instead of the full pipeline",
+    )
+    args = parser.parse_args()
+
+    from setup_snowflake import setup
+    from load_snowflake import load
+    from create_views import create_views
+
+    steps = {
+        "setup": setup,
+        "load":  load,
+        "views": create_views,
+    }
+
+    if args.only:
+        log.info("Running step: %s", args.only)
+        steps[args.only]()
+    else:
+        log.info("=== Phase 8 — Snowflake Serving Layer: full pipeline ===")
+        for name, fn in steps.items():
+            log.info("--- Step: %s ---", name)
+            fn()
+        log.info("=== Phase 8 complete — VOLVE_DB.SERVING ready ===")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as exc:
+        log.error("Pipeline failed: %s", exc)
+        sys.exit(1)
+</file>
+
+<file path="snowflake/setup_mcp.sql">
+-- ============================================================
+-- Phase 8 — Snowflake MCP Setup
+-- Jalankan dalam Snowflake Worksheet (sekali sahaja)
+-- ============================================================
+
+-- Step 1: Create database + schema
+-- ------------------------------------------------------------
+CREATE DATABASE IF NOT EXISTS VOLVE_DB;
+CREATE SCHEMA IF NOT EXISTS VOLVE_DB.SERVING;
+
+-- Step 2: Create the MCP server object
+-- Tool: SYSTEM_EXECUTE_SQL — allows Claude to run SQL directly
+-- ------------------------------------------------------------
+USE DATABASE VOLVE_DB;
+USE SCHEMA SERVING;
+
+CREATE OR REPLACE MCP SERVER volve_mcp
+  FROM SPECIFICATION $$
+    tools:
+      - title: "Volve SQL Tool"
+        name: "volve_sql"
+        type: "SYSTEM_EXECUTE_SQL"
+        description: "Execute SQL queries against VOLVE_DB for the Volve pipeline serving layer."
+        config:
+          read_only: false
+          query_timeout: 600
+          warehouse: "COMPUTE_WH"
+  $$;
+
+-- Verify MCP server created
+SHOW MCP SERVERS IN SCHEMA VOLVE_DB.SERVING;
+
+-- Step 3: Generate Programmatic Access Token (PAT)
+-- IMPORTANT: Copy the token output immediately — ia tidak akan muncul lagi!
+-- Ganti <YOUR_SNOWFLAKE_USERNAME> dengan username anda
+-- ------------------------------------------------------------
+ALTER USER <YOUR_SNOWFLAKE_USERNAME>
+  ADD PROGRAMMATIC ACCESS TOKEN volve_mcp_token
+  DAYS_TO_EXPIRY = 90;
+
+-- Output akan ada token secret — save dalam .env sebagai SNOWFLAKE_PAT_TOKEN
+</file>
+
+<file path="snowflake/setup_snowflake.py">
+"""
+Phase 8 — Snowflake Serving Layer
+setup_snowflake.py: Create database, schema, warehouse, and staging tables.
+Run once before load_snowflake.py.
+"""
+
+import os
+import sys
+import logging
+import snowflake.connector
+from dotenv import load_dotenv
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
+
+
+# ── DDL ──────────────────────────────────────────────────────────────────────
+
+DDL_SETUP = """
+CREATE DATABASE IF NOT EXISTS VOLVE_DB;
+CREATE SCHEMA IF NOT EXISTS VOLVE_DB.SERVING;
+"""
+
+DDL_PRODUCTION_DAILY = """
+CREATE TABLE IF NOT EXISTS VOLVE_DB.SERVING.production_daily (
+    well_id                  VARCHAR(20),
+    DATEPRD                  DATE,
+    date_year                INT,
+    WELL_BORE_CODE           VARCHAR(50),
+    BORE_OIL_VOL             FLOAT,
+    BORE_GAS_VOL             FLOAT,
+    BORE_WAT_VOL             FLOAT,
+    ON_STREAM_HRS            FLOAT,
+    AVG_DOWNHOLE_PRESSURE    FLOAT,
+    water_cut_pct            FLOAT,
+    gas_oil_ratio            FLOAT,
+    pressure_delta_24h       FLOAT,
+    is_anomaly_pressure      BOOLEAN,
+    is_zero_prod_uptime      BOOLEAN,
+    is_water_cut_spike       BOOLEAN,
+    is_gor_anomaly           BOOLEAN,
+    oil_vol_7d_avg           FLOAT,
+    oil_vol_30d_avg          FLOAT,
+    gas_vol_7d_avg           FLOAT,
+    gas_vol_30d_avg          FLOAT,
+    water_cut_7d_avg         FLOAT,
+    water_cut_30d_avg        FLOAT,
+    pressure_7d_avg          FLOAT,
+    pressure_30d_avg         FLOAT,
+    cum_oil_vol_monthly      FLOAT,
+    cum_gas_vol_monthly      FLOAT,
+    loaded_at                TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+"""
+
+DDL_ML_PREDICTIONS = """
+CREATE TABLE IF NOT EXISTS VOLVE_DB.SERVING.ml_predictions (
+    well_id                  VARCHAR(20),
+    DATEPRD                  DATE,
+    predicted_pressure       FLOAT,
+    rop_efficiency_score     FLOAT,
+    anomaly_score            FLOAT,
+    is_predicted_anomaly     BOOLEAN,
+    prediction_date          TIMESTAMP_NTZ,
+    loaded_at                TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+"""
+
+# ── Snowflake connection ──────────────────────────────────────────────────────
+
+def get_conn():
+    return snowflake.connector.connect(
+        account=os.environ["SNOWFLAKE_ACCOUNT"],
+        user=os.environ["SNOWFLAKE_USER"],
+        password=os.environ["SNOWFLAKE_PASSWORD"],
+        warehouse=os.environ.get("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH"),
+    )
+
+
+def run_statement(cur, sql: str, label: str):
+    sql = sql.strip()
+    if not sql:
+        return
+    cur.execute(sql)
+    log.info("OK  %s", label)
+
+
+def setup():
+    log.info("Connecting to Snowflake …")
+    conn = get_conn()
+    cur = conn.cursor()
+
+    try:
+        for stmt in DDL_SETUP.strip().split(";"):
+            run_statement(cur, stmt, stmt.strip()[:60])
+
+        cur.execute("USE DATABASE VOLVE_DB")
+        cur.execute("USE SCHEMA SERVING")
+
+        run_statement(cur, DDL_PRODUCTION_DAILY, "CREATE TABLE production_daily")
+        run_statement(cur, DDL_ML_PREDICTIONS,   "CREATE TABLE ml_predictions")
+
+        log.info("Snowflake setup complete — VOLVE_DB.SERVING ready")
+    finally:
+        cur.close()
+        conn.close()
+
+
+if __name__ == "__main__":
+    try:
+        setup()
+    except Exception as exc:
+        log.error("Setup failed: %s", exc)
+        sys.exit(1)
+</file>
+
+<file path="tests/HOW_IT_WORKS.txt">
+=== TESTS ===
+
+unit/        - Unit tests per function/script
+integration/ - End-to-end pipeline tests
+
+RUN TESTS:
+  pytest tests/unit/ -v
+  pytest tests/integration/ -v
+
+COVERAGE:
+  pytest --cov=. tests/
+</file>
+
+<file path=".env.example">
+# ============================================================
+# Volve Sensor & Production Analytics Pipeline — ENV Template
+# Copy to .env and fill in your own credentials.
+# NEVER commit .env to version control.
+# ============================================================
+
+# AWS
+AWS_ACCESS_KEY_ID=YOUR_AWS_ACCESS_KEY
+AWS_SECRET_ACCESS_KEY=YOUR_AWS_SECRET_KEY
+AWS_DEFAULT_REGION=ap-southeast-1
+AWS_S3_LANDING_BUCKET=volve-landing
+AWS_S3_BRONZE_BUCKET=volve-bronze
+AWS_S3_SILVER_BUCKET=volve-silver
+
+# Databricks
+DATABRICKS_HOST=https://YOUR_WORKSPACE.cloud.databricks.com
+DATABRICKS_TOKEN=YOUR_DATABRICKS_PAT
+DATABRICKS_WAREHOUSE_ID=YOUR_SQL_WAREHOUSE_ID
+DATABRICKS_HTTP_PATH=/sql/1.0/warehouses/YOUR_SQL_WAREHOUSE_ID
+
+# Snowflake
+SNOWFLAKE_ACCOUNT=YOUR_ACCOUNT_IDENTIFIER
+SNOWFLAKE_USER=YOUR_USERNAME
+SNOWFLAKE_PASSWORD=YOUR_PASSWORD
+SNOWFLAKE_DATABASE=VOLVE_DB
+SNOWFLAKE_WAREHOUSE=COMPUTE_WH
+SNOWFLAKE_SCHEMA=PUBLIC
+
+# Snowflake MCP (Phase 8)
+# Format URL: https://<SNOWFLAKE_ACCOUNT>.snowflakecomputing.com/api/v2/databases/VOLVE_DB/schemas/SERVING/mcp-servers/volve_mcp
+SNOWFLAKE_MCP_URL=https://YOUR_ACCOUNT.snowflakecomputing.com/api/v2/databases/VOLVE_DB/schemas/SERVING/mcp-servers/volve_mcp
+# PAT token — dapat dari: ALTER USER <user> ADD PROGRAMMATIC ACCESS TOKEN volve_mcp_token DAYS_TO_EXPIRY=90
+SNOWFLAKE_PAT_TOKEN=YOUR_PAT_TOKEN
+
+# Airflow (Docker)
+AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+AIRFLOW__CORE__FERNET_KEY=YOUR_FERNET_KEY
+
+# NiFi (optional — only if running NiFi ingestion)
+NIFI_API_URL=https://localhost:8443/nifi-api
+NIFI_USERNAME=admin
+NIFI_PASSWORD=YOUR_NIFI_PASSWORD
+</file>
+
+<file path=".gitignore">
+# Credentials — JANGAN COMMIT
+.env
+*.env
+credentials/
+**/*credentials*
+*.key
+*.pem
+
+# Data files
+*.parquet
+*.csv
+*.xlsx
+*.las
+*.xml
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Databricks
+.databricks/
+
+# NiFi
+NiFiMCP/config.yaml
+
+# Logs
+*.log
+logs/
+airflow/logs/
+
+# Docker
+docker-compose.override.yml
+
+# Dev environment config
+setup.sh
+CLAUDE.md
+PROJECT_STATUS.md
+.mcp.json
+docs/MCP_SETUP.md
+.claude/
+
+# AI dev kit (Codespaces tooling — not project code)
+.ai-dev-kit/
+.github/
+.vscode/
+
+# AWS CLI installer
+aws/
+awscliv2.zip
+
+# IDE
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+</file>
+
+<file path="README.md">
+# Volve Sensor & Production Analytics Pipeline
+
+An end-to-end data engineering pipeline built on the **Equinor Volve open dataset** — a real North Sea oil field dataset released publicly by Equinor (Norway). This project demonstrates production-grade data engineering covering lakehouse ingestion, multi-layer transformation, data quality, ML, and orchestration.
+
+---
+
+## Project Overview
+
+The Volve field operated from 2007 to 2016 in the Norwegian North Sea. Equinor released the full dataset in 2018 as an open dataset for research and learning. This pipeline processes raw sensor and production data from 3 wells (F-1, F-11, F-12), transforms it through Bronze → Silver → Gold layers using the Databricks Lakehouse, trains ML models via MLflow, orchestrates via Airflow, validates via Great Expectations, and serves insights through Snowflake BI views.
+
+**Use case:** Detect production anomalies, predict downhole pressure, and score drilling efficiency — the kind of analytics an O&G data engineering team would run in production.
+
+---
+
+## Architecture
+
+```
+Equinor Volve Data Village
+(Databricks Volume — Delta Share)
+         │
+         ▼
+  ┌─────────────────────────────┐
+  │   Bronze Layer              │  ← Raw ingest via Databricks SQL Warehouse
+  │   claudecatalog.bronze.*    │    read_files() from Volume (Excel + WITSML XML)
+  └─────────────────────────────┘
+         │
+         ▼
+  ┌─────────────────────────────┐
+  │   Silver Layer              │  ← Clean, cast, dedupe, derived columns
+  │   claudecatalog.silver.*    │    DQ gate: Great Expectations (> 95% pass)
+  └─────────────────────────────┘
+         │
+         ▼
+  ┌─────────────────────────────┐
+  │   Gold Layer                │  ← KPIs, anomaly flags, ML feature store
+  │   claudecatalog.gold.*      │
+  └─────────────────────────────┘
+         │               │
+         ▼               ▼
+  ┌──────────────┐  ┌──────────────┐
+  │  Snowflake   │  │   MLflow     │  ← 3 models: pressure, efficiency, anomaly
+  │  VOLVE_DB    │  │ (Databricks) │
+  │  5 BI views  │  └──────────────┘
+  └──────────────┘
+
+  Orchestrated end-to-end by Apache Airflow (10-task DAG, Docker)
+```
+
+---
+
+## Tech Stack
+
+| Layer | Tool | Notes |
+|-------|------|-------|
+| Data Source | Equinor Volve Data Village | Databricks Volume (Delta Share) |
+| Bronze / Silver / Gold | Databricks SQL Warehouse | Serverless, Unity Catalog |
+| Table Format | Delta Lake | ACID, time travel, schema evolution |
+| Orchestration | Apache Airflow (Docker) | 10-task DAG, LocalExecutor |
+| Data Quality | Great Expectations | SQL-based DQ gates between layers |
+| Serving | Snowflake | 5 BI reporting views in VOLVE_DB.SERVING |
+| ML Tracking | MLflow (Databricks) | Experiment logging, model registry |
+| Scripting | Python + databricks-sql-connector | Run from GitHub Codespaces |
+| Dev Environment | GitHub Codespaces | 2 cores, 8GB RAM |
+
+---
+
+## Data Sources
+
+| Source | Format | Volume | Description |
+|--------|--------|--------|-------------|
+| Production Data | Excel (.xlsx) | 1 file, 4,967 records | Daily oil/gas/water volumes per well, 2007–2016 |
+| WITSML Trajectory | XML | 11 files (3 wells) | Wellbore survey stations — measured depth, inclination, azimuth |
+| WITSML Sensor Logs | XML | 11,664 files (sampled) | Downhole pressure, temperature, torque, ROP |
+| Well Logs | LAS | 301 files | Petrophysical measurements per depth |
+
+> **Wells in scope:** F-1, F-11, F-12 (free-tier constraint — 3 wells from 29 available)
+
+---
+
+## Pipeline Layers
+
+### Bronze — Raw Landing
+- Source: Databricks Volume `/Volumes/equinor_asa_volve_data_village/public/volve/`
+- `read_files()` via SQL Warehouse — Excel and WITSML XML supported natively
+- No transformation — raw data preserved as-is with metadata columns
+- Metadata added: `ingestion_ts`, `source_system`, `source_file`, `well_id`
+- Tables: `claudecatalog.bronze.raw_production`, `claudecatalog.bronze.raw_witsml_trajectory`
+
+### Silver — Cleaned & Validated
+- Type casting (TRY_CAST all numerics → DOUBLE), NULL handling, deduplication
+- Derived: `water_cut_pct = BORE_WAT_VOL / (BORE_OIL_VOL + BORE_WAT_VOL) * 100`
+- Derived: `gas_oil_ratio = BORE_GAS_VOL / BORE_OIL_VOL`
+- Trajectory: explode `trajectory_stations_json` → one row per survey station
+- Flags: `is_zero_prod_uptime`, `is_pressure_valid`, `is_md_valid`, `is_incl_valid`
+- Tables: `claudecatalog.silver.cleaned_production`, `claudecatalog.silver.cleaned_trajectory`
+
+### Gold — KPIs & Feature Store
+- Anomaly flags: pressure spikes, zero-production uptime, water cut spikes, GOR anomalies
+- Rolling averages: 7-day and 30-day for oil volume, gas volume, water cut, pressure
+- Monthly cumulative volumes, `pressure_delta_24h`
+- ML feature store: lag features (1/2/3/7d), rolling stats, trajectory well characteristics
+- Three ML targets: `next_day_pressure`, `rop_efficiency_score`, `is_anomaly`
+- Tables: `claudecatalog.gold.production_daily`, `claudecatalog.gold.ml_feature_store`
+
+### Serving — Snowflake BI Views
+- Staging tables: `VOLVE_DB.SERVING.production_daily`, `VOLVE_DB.SERVING.ml_predictions`
+- 4,967 rows loaded from Databricks Gold via Python connector
+
+| View | Description |
+|------|-------------|
+| `vw_daily_production_kpis` | Ops KPIs per well/date — volumes, pressure, rolling averages |
+| `vw_anomaly_alerts` | Anomaly flags with severity (CRITICAL / HIGH / MEDIUM), filtered to anomaly days only |
+| `vw_production_trends` | Monthly aggregates per well — total volumes, avg pressure, anomaly days |
+| `vw_ml_predictions` | ML actual vs predicted pressure + prediction result labels (TRUE_POS / FALSE_POS) |
+| `vw_well_comparison` | Cross-well KPI comparison per year — anomaly %, volumes, pressure |
+
+---
+
+## ML Models
+
+| Model | Algorithm | Target | Framework |
+|-------|-----------|--------|-----------|
+| `volve_pressure_prediction` | XGBoost Regressor | Next-day downhole pressure | MLflow |
+| `volve_drilling_efficiency` | Random Forest Regressor | ROP efficiency score | MLflow |
+| `volve_anomaly_detection` | Isolation Forest | is_anomaly (binary) | MLflow |
+
+All models trained locally, logged to Databricks MLflow experiment registry (`claudecatalog.ml.*`).
+
+---
+
+## Airflow DAG — 10 Tasks
+
+```
+check_source_files
+    ├── run_bronze_production ──────┐
+    └── run_bronze_witsml ──────────┤
+                                   ├── run_silver_production ──┐
+                                   └── run_silver_trajectory ──┤
+                                                               └── check_dq_silver  ← GATE (blocks if < 95%)
+                                                                       ├── run_gold_production ──┐
+                                                                       └── run_gold_features ────┤
+                                                                                                 └── run_ml_scoring
+                                                                                                          └── send_daily_report
+```
+
+Schedule: `0 2 * * *` (daily at 02:00 UTC). DQ gate (Task 6) blocks downstream tasks if Silver pass rate < 95%.
+
+---
+
+## Data Quality Rules
+
+| Suite | Table | Pass Threshold |
+|-------|-------|----------------|
+| `bronze_production_suite` | `bronze.raw_production` | > 95% |
+| `silver_production_suite` | `silver.cleaned_production` | > 95% |
+| `silver_trajectory_suite` | `silver.cleaned_trajectory` | > 95% |
+| `gold_feature_suite` | `gold.ml_feature_store` | > 95% |
+
+Alert thresholds enforced in Gold:
+- `is_anomaly_pressure`: pressure delta 24h > 500 psi
+- `is_zero_prod_uptime`: `BORE_OIL_VOL == 0` AND `ON_STREAM_HRS > 0`
+- `is_water_cut_spike`: water cut > 80% when prior day was < 60%
+- `is_gor_anomaly`: GOR > 3× well baseline
+
+---
+
+## Repository Structure
+
+```
+├── bronze/
+│   ├── bronze_production.py       # Excel → claudecatalog.bronze.raw_production
+│   ├── bronze_witsml.py           # WITSML XML → claudecatalog.bronze.raw_witsml_trajectory
+│   └── run_bronze.py              # Orchestrator
+│
+├── silver/
+│   ├── silver_production.py       # bronze.raw_production → silver.cleaned_production
+│   ├── silver_trajectory.py       # bronze.raw_witsml_trajectory → silver.cleaned_trajectory
+│   └── run_silver.py              # Orchestrator
+│
+├── gold/
+│   ├── gold_production_daily.py   # silver → gold.production_daily (KPIs + anomaly flags)
+│   ├── gold_ml_features.py        # silver → gold.ml_feature_store (lag + rolling features)
+│   └── run_gold.py                # Orchestrator
+│
+├── ml/
+│   ├── train_pressure_prediction.py   # XGBoost → next_day_pressure
+│   ├── train_drilling_efficiency.py   # Random Forest → rop_efficiency_score
+│   ├── train_anomaly_detection.py     # Isolation Forest → is_anomaly
+│   ├── score_models.py                # Batch inference → gold.ml_predictions
+│   └── run_ml.py                      # Orchestrator
+│
+├── data_quality/
+│   ├── suites/
+│   │   ├── bronze_production_suite.py  # 8 expectations
+│   │   ├── silver_production_suite.py  # 10 expectations
+│   │   ├── silver_witsml_suite.py      # 8 expectations
+│   │   └── gold_feature_suite.py       # 9 expectations
+│   └── run_dq.py                       # Orchestrator → writes results to silver.dq_results
+│
+├── snowflake/
+│   ├── setup_snowflake.py         # Create VOLVE_DB.SERVING + staging tables
+│   ├── load_snowflake.py          # ETL Databricks Gold → Snowflake (truncate + reload)
+│   ├── create_views.py            # Create 5 BI views
+│   ├── run_snowflake.py           # Orchestrator (--only setup|load|views)
+│   └── setup_mcp.sql              # Snowflake MCP server DDL (run once in Worksheet)
+│
+├── airflow/
+│   ├── dags/
+│   │   ├── volve_daily_pipeline.py          # 10-task DAG (schedule: 0 2 * * *)
+│   │   └── operators/
+│   │       ├── databricks_sql_operator.py   # DatabricksSQLScriptOperator + QueryOperator
+│   │       └── __init__.py
+│   └── requirements.txt
+│
+├── infrastructure/
+│   └── docker-compose.yml         # Airflow 2.9.3 + Postgres (LocalExecutor)
+│
+├── tests/                         # Unit + integration tests
+└── docs/
+    ├── ARCHITECTURE.md            # Solution architecture + ADRs
+    ├── BRD.md                     # Business requirements
+    ├── DRD.md                     # Data requirements + schemas
+    ├── PIPELINE_SPEC.md           # Transform logic specification
+    ├── DQD.md                     # Data quality rules
+    └── OPS_RUNBOOK.md             # Operations runbook
+```
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- Databricks workspace with SQL Warehouse (serverless or standard)
+- Access to Equinor Volve Data Village (via Delta Share or local copy)
+- Snowflake account with `VOLVE_DB` database and `SERVING` schema
+- Docker (for Airflow orchestration)
+- Python 3.10+
+
+### Quick Start
+
+```bash
+# Clone
+git clone https://github.com/rajeluqman/Volve-Sensor-Production-Analytics-Pipeline.git
+cd Volve-Sensor-Production-Analytics-Pipeline
+
+# Configure credentials
+cp .env.example .env
+# Edit .env — add Databricks host, token, warehouse ID, Snowflake credentials
+
+# Run Bronze layer
+pip install databricks-sql-connector python-dotenv
+python bronze/run_bronze.py
+
+# Run Silver layer
+python silver/run_silver.py
+
+# Run Gold layer
+python gold/run_gold.py
+
+# Train ML models
+pip install xgboost scikit-learn mlflow
+python ml/run_ml.py
+
+# Run Data Quality
+pip install -r data_quality/requirements.txt
+python data_quality/run_dq.py
+
+# Load Snowflake serving layer
+pip install -r snowflake/requirements.txt
+cd snowflake && python run_snowflake.py
+```
+
+### Airflow (Docker)
+
+```bash
+# Start Airflow
+cd infrastructure && docker-compose up -d
+
+# Install pipeline deps inside Airflow container
+docker exec infrastructure-airflow-scheduler-1 \
+  pip install -r /workspace/airflow/requirements.txt
+
+# DAG will run daily at 02:00 UTC — trigger manually:
+# Airflow UI → http://localhost:8080 → volve_daily_pipeline → Trigger DAG
+```
+
+---
+
+## Build Status
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase 0 | Documentation & Repository Setup | Done |
+| Phase 1 | Infrastructure Setup (Databricks, AWS, Snowflake) | Done |
+| Phase 2 | Bronze Layer | Done |
+| Phase 3 | Silver Layer | Done |
+| Phase 4 | Gold Layer + Feature Store | Done |
+| Phase 5 | ML Models (MLflow) | Done |
+| Phase 6 | Orchestration (Airflow DAG) | Done |
+| Phase 7 | Data Quality (Great Expectations) | Done |
+| Phase 8 | Serving Layer (Snowflake) | Done |
+| Phase 9 | Testing + Documentation Finalisation | In Progress |
+
+---
+
+## Dataset
+
+**Equinor Volve Data Village** — publicly available at [equinor.com/energy/volve-data-sharing](https://www.equinor.com/energy/volve-data-sharing)
+
+Released under the Equinor Open Data Licence. Not included in this repository. Access via Databricks Delta Share (`equinor_asa_volve_data_village` catalog) or download and host in your own cloud storage.
+
+---
+
+## Key Engineering Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Databricks SQL Warehouse (serverless) | Data already in Databricks Volume — no Glue/Spark cluster needed |
+| `read_files()` for ingestion | Native Databricks SQL function — handles Excel + XML without custom ETL code |
+| `TO_JSON(trajectoryStation)` in Bronze | WITSML XML schema varies across wellbores — JSON string avoids UNION ALL conflict |
+| 3 wells only (F-1, F-11, F-12) | Free-tier SQL Warehouse constraint — representative sample of 29 wells |
+| Docker Airflow vs MWAA | $0 vs ~$50/month — code-identical to MWAA |
+| Sequential execution (NiFi / Airflow) | 8GB Codespaces RAM — cannot run concurrent Docker services |
+| Python connector for Snowflake load | Direct ETL via pandas + snowflake-connector — no intermediate S3 staging needed |
+</file>
+
+</files>

@@ -119,3 +119,37 @@ remains the source of truth; Confluence is derived and reproducible from `PUBLIS
 **Rejected here:** deep Confluence page-tree nesting (section parents + re-parenting the existing live
 pages). Rejected for now — re-parenting a live space via the API is fiddly and risky; the Start-Here
 hub page provides the onboarding navigation (an ordered reading path) without restructuring the tree.
+
+## Addendum (2026-06-30) — space homepage was never written
+
+**Gap found.** The space homepage (`CONFLUENCE_PARENT_PAGE_ID`, bare-titled "Creative Intelligence")
+is only ever used as the *ancestor* for child pages — `_create_page`/`_update_page` never write to
+it directly. Confluence leaves a new space's homepage blank by default, so the space had no styled
+landing page even with all 23 child pages live — a real engineering wiki always has the homepage do
+that hub job.
+
+**Fix.** New `--homepage` flag on the same script. `HOMEPAGE_SECTIONS` (Start here / Architecture /
+Operate / Releases) maps page-title stems already in `PUBLISH_SET` to a one-line "why click this."
+`_homepage_html()` resolves each stem to the page id the *current run* just created/found via the
+API (no hand-typed URLs — a renamed or unpublished page fails loud via `sys.exit`, not a silent dead
+link) and renders plain anchor tags, consistent with the rejected-alt #3 stance (no Confluence
+macros). `_update_homepage()` PUTs to `CONFLUENCE_PARENT_PAGE_ID` itself, preserving its existing
+title (Confluence requires the title on every version PUT) and incrementing its version like any
+other page.
+
+**Scope.** `--homepage` is intentionally a separate opt-in flag, not default-on, so a routine doc
+sync can't silently rewrite the homepage's curated copy. It must run *after* a normal sync (or in
+the same invocation) so the pages it links to already have ids — running it standalone before any
+docs exist fails fast with the list of missing titles.
+
+**Second gap found on first real run.** Writing the page body alone (`_update_homepage`) was not
+enough — Confluence still showed "This space doesn't have a homepage." A space's homepage is a
+separate pointer on the *space* object (`space.homepage.id`), distinct from the page's own content;
+Confluence Cloud Server/DC convention does not auto-promote a page to homepage just because it's the
+configured `CONFLUENCE_PARENT_PAGE_ID` ancestor. Fixed with `_set_space_homepage()` — `PUT
+/rest/api/space/{spaceKey}` with `{"homepage": {"id": page_id}}` — called right after the content
+write so `--homepage` does both in one step: write the body, then claim the pointer. Verified live
+2026-06-30 (`space.homepage.id` now equals `CONFLUENCE_PARENT_PAGE_ID`).
+
+**Unchanged:** still manual-run only (rejected-alt #4 stands), still no new dependency, still
+Confluence Cloud Basic Auth.
