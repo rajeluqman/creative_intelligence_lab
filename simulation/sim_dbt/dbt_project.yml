@@ -1,0 +1,27 @@
+name: 'sim_creative_intel'          # R2: MUST differ from real 'creative_intelligence'
+version: '0.1.0'
+config-version: 2
+profile: 'sim_creative_intel'       # isolated profile (profiles.sim.yml.example) — never 'creative_intelligence'
+model-paths: ["models"]
+seed-paths: ["seeds"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+# RBC SIMULATION LAB — isolated dbt project. Writes ONLY to the local sim duckdb or under the
+# sim_s3_root below (staging bucket, declared throwaway in .env.example). Never references the
+# canonical lake bucket (creative-intel-lake) or any real model/seed.
+# `python simulation/check_isolation.py` enforces this.
+vars:
+  sim_s3_root: "s3://creative-intel-staging/sim"   # all external paths derive from here
+
+models:
+  sim_creative_intel:
+    # 'legacy'  = the synthetic "Teradata" source-of-truth we migrate FROM.
+    # 'migrated' = the rebuilt Snowflake/Spark target we reconcile AGAINST legacy.
+    legacy:   {+materialized: table}
+    migrated: {+materialized: table}
+
+seeds:
+  sim_creative_intel:
+    # Sonnet: pin seed column types here (mirror the real project's pattern) so `dbt seed` is stable.
+    +quote_columns: false

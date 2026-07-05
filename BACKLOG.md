@@ -49,3 +49,20 @@ were considered and rejected, not forgotten:
 - Dedicated vector DB (DuckDB VSS / Snowflake native `VECTOR` already cover semantic search at
   this data volume — building a separately-hosted vector DB here would be over-engineering, not
   a missing feature)
+
+## Security layer scope — REJECTED items (2026-07-04, ADR-014)
+
+The 2026-07-04 Fable design session ruled `CREATIVE_INTEL_ANALYST_RO` (a real, minimal RBAC role)
+IN — see `architecture/ADR-014-security-and-access-model.md` — but rejected building a standing
+security *program* around it, same discipline as the gym-apparatus ruling above:
+
+- **9-file security folder** (threat model, incident-response doc, access-review cadence,
+  secrets-management policy, etc. as standalone top-level docs) — rejected. Redundant with the
+  ADR + the saboteur `INCIDENT_RUNBOOK.md`'s 8-phase lifecycle already in this repo; more
+  reviewers-of-prose than a single-dev project needs.
+- **`threat_model.md` / `incident_response.md` as standalone docs** — rejected for the same
+  reason; the simulated version already lives in `simulation/CIKGU_DRILL_PROTOCOL.md` +
+  `INCIDENT_RUNBOOK.md`, and a real one would be written against a real incident, not
+  speculatively.
+- **Custom audit-log build** (a bespoke access-log table/pipeline) — rejected. Reinvents what S3
+  access logging + Snowflake `ACCOUNT_USAGE` already retain natively; see ADR-014 §C.

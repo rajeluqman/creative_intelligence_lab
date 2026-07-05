@@ -1,0 +1,33 @@
+# {{PROJECT_NAME}} — PROJECT STATUS (resume-safe checkpoint)
+
+> Token-safe checkpoint. If context runs out, a fresh session reads the ▶ RESUME HERE block
+> FIRST (not the whole file/repo). Per token-efficiency operating protocol.
+
+## ▶ RESUME HERE (read this first)
+{{one paragraph: what's done, what's next, any open decision the owner needs to make}}
+
+## Journey doc status
+| Doc | Status (done / draft / N/A-reason) |
+|---|---|
+| journey/01_DATASET_AND_SOURCES.md | |
+| journey/02_BUSINESS_QUESTIONS.md | |
+| journey/03_DATA_REQUIREMENTS.md | |
+| journey/04_DATA_MODEL.md | |
+| journey/05_STTM.md | |
+| journey/06_DQ_PLAN.md | |
+| journey/07_PIPELINE_SPEC.md | |
+| journey/08_SERVING_AND_EVIDENCE.md | |
+
+## Gate status (last run)
+| Gate | Result | Date |
+|---|---|---|
+| gates/journey_completeness.py | | |
+| gates/boundary_contract.py | | |
+| gates/doc_reference_contract.py | | |
+| gates/identity_contract.py (if applicable) | | |
+
+## Open decisions for owner
+- {{list}}
+
+## Session log (append, don't rewrite history)
+- {{date}}: {{what happened, what changed}}

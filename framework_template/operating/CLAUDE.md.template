@@ -1,0 +1,63 @@
+# {{PROJECT_NAME}} — AI Context
+
+> Auto-loaded by Claude Code every session. Adapted from the CIL/pipeline_retrofit framework kit.
+
+## STOP-GATE — read before ANY data/model/lineage work
+Before editing a model, seed, schema, storage path, or ingest script — or proceeding past a
+lineage/identity question — you MUST:
+1. **Open the governing ADR/journey doc first.** Grain/model → `journey/04_DATA_MODEL.md` +
+   relevant ADR. Stack boundary → `governance/BOUNDARY_CONTRACT.md`. Scope → `journey/02` +
+   `governance/BACKLOG.md`. New/ad-hoc feature → `governance/ADR/ADR-000-feature-intake-protocol.md`.
+2. **Validate lineage & fidelity before building downstream.** Run
+   `python gates/identity_contract.py` (or project equivalent) and `python
+   gates/boundary_contract.py` — these are the binding checks, not judgement.
+3. **If a rule and the request conflict, STOP and surface it** — cite the doc, ask the relevant
+   veto-holder (architect / scope-guardian) before writing code.
+
+Enforced three ways: this prompt (soft), `.claude/hooks/governance_guard.py` (blocks edits to
+governed files), CI gates (blocks the PR). Governance is code, not vigilance.
+
+## ANTI-SHORTCUT PROTOCOL — read-before-touch, reconcile-before-done
+1. **Read-before-touch** — never edit or assert about a file from memory; read it THIS turn.
+2. **Enumerate, don't sample** — for "all N" tasks, get N from ground truth before acting,
+   re-count after.
+3. **Reconcile-before-done** — before saying done/fixed, restate the request as a checklist with
+   evidence (`file:line` / command output) per item. No evidence = "unverified", not "done."
+4. **Tag assumptions** — any load-bearing claim not checked this turn is marked "(unverified)".
+
+## Project overview
+**Domain**: {{domain}}
+**Problem**: {{one-paragraph problem statement — pull from journey/02}}
+**Purpose**: {{portfolio / production / learning}}
+
+## Scope (see `journey/02_BUSINESS_QUESTIONS.md` + `governance/BACKLOG.md`)
+{{v1 scope statement — what's locked, what's explicitly rejected}}
+
+## Stack (locked — see `governance/BOUNDARY_CONTRACT.md`)
+| Layer | Storage | Compute/engine | Notes |
+|-------|---------|-----------------|-------|
+| {{fill from journey/07}} | | | |
+
+## Architecture of record
+`journey/` — the 8 mandatory docs (dataset/sources, business questions, DRD, data model, STTM,
+DQ plan, pipeline spec, serving/evidence). `governance/ADR/` — decision record, numbered.
+`governance/BOUNDARY_CONTRACT.md`, `governance/BACKLOG.md`.
+
+**Governance gate:** {{architect role name}} holds ultimate veto on model changes; {{scope-guardian
+role name}} holds hard veto on scope creep. No Gold/marts work proceeds without sign-off.
+
+## Repo map
+{{point to REPO_MAP.md if generated, or list key dirs}}
+
+## Cabinet ({{N}} agents) — see `.claude/agents/`
+{{list roster — trim from operating/agents/ template as needed, per ADR-000 §2 minimum}}
+
+## Token discipline
+1. Checkpoint first: read `PROJECT_STATUS.md` before reading code.
+2. Scope reads to the current module — max ~3 files/turn.
+3. Use an Explore-style subagent for "where is X" instead of reading many files inline.
+4. Update the checkpoint before ending a turn.
+
+## What NOT to commit
+`.env*`, raw data dumps, credentials, generated large binaries. Add to `.gitignore` as they
+first appear.

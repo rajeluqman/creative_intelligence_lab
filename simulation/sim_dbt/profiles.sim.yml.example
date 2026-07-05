@@ -1,0 +1,10 @@
+# Copy to ~/.dbt/profiles.yml (merge in) OR set DBT_PROFILES_DIR=simulation/sim_dbt and rename to
+# profiles.yml. ISOLATED from the real project: separate catalog file + separate S3 prefix.
+sim_creative_intel:
+  target: sim
+  outputs:
+    sim:
+      type: duckdb
+      path: "target/sim.duckdb"          # ephemeral, lab-only DuckDB catalog (compute, not truth)
+      extensions: [httpfs, parquet]
+      # settings: {s3_region: "ap-southeast-1"}   # uncomment for real S3 reads/writes under sim/

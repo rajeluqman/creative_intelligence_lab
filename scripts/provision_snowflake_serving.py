@@ -51,6 +51,13 @@ BI tool against these tables must quote column names.
    (this script provisions/refreshes; that one verifies — kept as two files on purpose, same
    separation as `dbt build` vs. a test suite).
 
+ADR-014 addition (2026-07-04): `account` and `tables` also provision `CREATIVE_INTEL_ANALYST_RO`,
+a read-only role distinct from the operating `CREATIVE_INTEL_ROLE` above — USAGE-only on the
+warehouse (no OPERATE), and `SELECT` on ALL + FUTURE TABLES in PUBLIC (the FUTURE grant is the
+fix for the T-SRV-04 drill class: a per-table-only grant list means a newly added Gold model is
+invisible to a role until this script is re-run for it). No stage grant exists for this role, so
+it can never reach Bronze/Silver regardless of future changes here.
+
 Usage:
     python scripts/provision_snowflake_serving.py                       # dry-run, all phases
     python scripts/provision_snowflake_serving.py --phase account --apply
@@ -88,6 +95,8 @@ def _cfg() -> dict:
         "warehouse": os.environ.get("SNOWFLAKE_WAREHOUSE", "CREATIVE_INTEL_WH"),
         "database": os.environ.get("SNOWFLAKE_DATABASE", "CREATIVE_INTEL_DB"),
         "role": os.environ.get("SNOWFLAKE_ROLE", "CREATIVE_INTEL_ROLE"),
+        "analyst_role": os.environ.get("SNOWFLAKE_ANALYST_ROLE", "CREATIVE_INTEL_ANALYST_RO"),
+        "analyst_user": os.environ.get("SNOWFLAKE_ANALYST_USER", ""),
         "user": os.environ.get("SNOWFLAKE_USER", "<SNOWFLAKE_USER>"),
         "bootstrap_role": os.environ.get("SNOWFLAKE_BOOTSTRAP_ROLE", "ACCOUNTADMIN"),
         "integration": os.environ.get("SNOWFLAKE_S3_INTEGRATION", "CREATIVE_INTEL_S3_INTEGRATION"),
@@ -99,7 +108,7 @@ def _cfg() -> dict:
 
 
 def account_statements(cfg: dict) -> list[str]:
-    return [
+    stmts = [
         f"USE ROLE {cfg['bootstrap_role']};",
         f"CREATE WAREHOUSE IF NOT EXISTS {cfg['warehouse']} "
         f"WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE;",
@@ -109,7 +118,22 @@ def account_statements(cfg: dict) -> list[str]:
         f"GRANT USAGE ON DATABASE {cfg['database']} TO ROLE {cfg['role']};",
         f"GRANT USAGE ON SCHEMA {cfg['database']}.PUBLIC TO ROLE {cfg['role']};",
         f"GRANT ROLE {cfg['role']} TO USER {cfg['user']};",
+        # ADR-014: read-only analyst role, USAGE-only (no OPERATE) — distinct blast radius from
+        # the operating role above.
+        f"CREATE ROLE IF NOT EXISTS {cfg['analyst_role']};",
+        f"GRANT USAGE ON WAREHOUSE {cfg['warehouse']} TO ROLE {cfg['analyst_role']};",
+        f"GRANT USAGE ON DATABASE {cfg['database']} TO ROLE {cfg['analyst_role']};",
+        f"GRANT USAGE ON SCHEMA {cfg['database']}.PUBLIC TO ROLE {cfg['analyst_role']};",
     ]
+    if cfg["analyst_user"]:
+        stmts.append(f"GRANT ROLE {cfg['analyst_role']} TO USER {cfg['analyst_user']};")
+    else:
+        print(
+            "NOTE: SNOWFLAKE_ANALYST_USER is unset - CREATIVE_INTEL_ANALYST_RO is created but "
+            "granted to no user yet. Set it before --apply to also assign the role.",
+            file=sys.stderr,
+        )
+    return stmts
 
 
 def storage_statements(cfg: dict) -> list[str]:
@@ -157,6 +181,11 @@ def table_statements(cfg: dict) -> list[str]:
     stmts.append(f"GRANT USAGE ON SCHEMA PUBLIC TO ROLE {cfg['role']};")
     for model in GOLD_MODELS:
         stmts.append(f"GRANT SELECT ON PUBLIC.{model.upper()} TO ROLE {cfg['role']};")
+    # ADR-014: analyst role gets a blanket + FUTURE grant (unlike the operating role's per-table
+    # list above) since ad-hoc analyst queries have no code-review gate to catch a missed model.
+    stmts.append(f"GRANT USAGE ON SCHEMA PUBLIC TO ROLE {cfg['analyst_role']};")
+    stmts.append(f"GRANT SELECT ON ALL TABLES IN SCHEMA PUBLIC TO ROLE {cfg['analyst_role']};")
+    stmts.append(f"GRANT SELECT ON FUTURE TABLES IN SCHEMA PUBLIC TO ROLE {cfg['analyst_role']};")
     return stmts
 
 
@@ -176,6 +205,7 @@ def search_statements(cfg: dict) -> list[str]:
         f"  SELECT {cols}, \"embedding\"::VECTOR(FLOAT, 768) AS \"embedding_vec\"\n"
         f'  FROM PUBLIC.FACT_CHUNK WHERE "embedding" IS NOT NULL;',
         f"GRANT SELECT ON VIEW PUBLIC.{cfg['vector_view']} TO ROLE {cfg['role']};",
+        f"GRANT SELECT ON VIEW PUBLIC.{cfg['vector_view']} TO ROLE {cfg['analyst_role']};",
     ]
 
 

@@ -16,3 +16,8 @@ data/
 great_expectations/uncommitted/
 __pycache__/
 COST_LOG.md
+
+# RBC simulation lab — ephemeral drill artifacts (regenerable, never source of truth)
+simulation/.scratch/
+simulation/faults/.fixtures/
+simulation/faults/.active_faults.json

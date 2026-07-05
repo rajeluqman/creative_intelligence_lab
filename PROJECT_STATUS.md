@@ -7,7 +7,29 @@
 > continue. Read this block, do the next step, expand into the dated sections below only for the
 > evidence you actually need.
 
-- **▶ NEWEST LIVE THREAD (2026-06-29) — CONTROL-PLANE AIRFLOW LAB (design):** a new repo
+- **▶ NEWEST LIVE THREAD (2026-07-04) — FRAMEWORK KIT + SECURITY + SABOTEUR BANK: Sonnet build
+  session COMPLETE (all 4 units, `04_SONNET_HANDOVER.md`).** U1: `ADR-014-security-and-access-model.md`
+  (RBAC matrix, data classification, audit, PDPA — named-not-built) +
+  `CREATIVE_INTEL_ANALYST_RO` role added to `scripts/provision_snowflake_serving.py` (verified via
+  dry-run, all 5 phases) + 2 drills (`simulation/drills/T-SEC-01_leaked_key.md`,
+  `T-SRV-04_rbac_future_grant.md`, gated solutions in `.solutions/`) + BACKLOG.md REJECTED entries.
+  U2: kit → v1.1.0 — `journey/09_SECURITY_AND_ACCESS.md` (9th mandatory doc),
+  `gates/secrets_scan.py` (config-driven, `--self-test` passes), `framework.yml` + `ci.yml.template`
+  wired, kit `ADR-001-security-layer-mandatory.md`, `CHANGELOG.md` v1.1.0. Full dry-run loop
+  re-run in scratch (unfilled→fail all 9 named, filled→pass all 4 gates, planted
+  secret→fail, allowlist/inline-marker→pass) — **caught and fixed one real bug in the process**:
+  the new journey doc's own illustrative "N/A — ..." examples were tripping
+  `journey_completeness.py`'s honest-N/A escape hatch, false-passing the unfilled template (fixed
+  by moving those examples out of the N/A-detection shape). U3: `sec_leaked_key` +
+  `sec_missing_future_grant` faults implemented for real in `simulation/faults/inject.py`/`reset.py`
+  (verified end-to-end: inject → fixture written → reset → fixture removed, isolation PASS);
+  `simulation/faults/catalog/CIL_INJECTABLE_MAP.md` maps all 100 bank T-IDs (86 injectable in CIL
+  today, 14 need Spark/Fabric this repo doesn't have); control-plane port note added to
+  `saboteur/README.md`; `LADDERS.md` bank pointer added. U4: all CIL gates green (lineage,
+  boundary, doc-reference 27 docs, adr-coupling, both contract self-tests) + repo-map regenerated
+  217→226 files (was stale, now `--check` clean) + kit's own 4 gates green against the real
+  `framework_template/` dir. Next: none open from this thread — awaiting owner review pass.
+- **PREVIOUS LIVE THREAD (2026-06-29) — CONTROL-PLANE AIRFLOW LAB (design):** a new repo
   `airflow_dag_running_pipeline` = control-plane + teaching lab + live-chaos range orchestrating all
   5 pipelines (CIL + the 4 retrofit repos) across AWS/Azure/Databricks/Snowflake. Fasa-0 Opus design
   is COMPLETE in `architecture/control_plane_lab/` (00_MASTER_SPEC, 01_OPUS_DECISIONS,

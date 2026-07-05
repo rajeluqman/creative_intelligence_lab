@@ -1,0 +1,85 @@
+# framework.yml — the ONE config every gate script in gates/ reads.
+# Fill every {{...}} placeholder before running gates. Do not edit the .py scripts to hardcode
+# project values — if a script can't get what it needs from here, add the key here instead.
+# See 00_START_HERE.md "Design rule that makes this portable."
+
+project:
+  name: "{{PROJECT_NAME}}"
+
+paths:
+  # Directories that legitimately exist at repo root — doc_reference_contract checks path
+  # references in docs resolve to one of these.
+  path_roots:
+    - "docs/"
+    - "tests/"
+    - ".claude/"
+    - "scripts/"
+    - "architecture/"
+    # add project-specific roots, e.g. "bronze/", "silver/", "gold/", "dbt_project/"
+
+  # Where dbt (or equivalent transform) models live, for model-name drift checks.
+  dbt_root: "{{e.g. gold/dbt_models  or  models}}"
+  model_globs:
+    - "models/**/*.sql"
+  snapshot_globs:
+    - "snapshots/*.sql"
+
+journey:
+  # Every doc here must exist and be non-template (see journey_completeness.py logic).
+  required_docs:
+    - "journey/01_DATASET_AND_SOURCES.md"
+    - "journey/02_BUSINESS_QUESTIONS.md"
+    - "journey/03_DATA_REQUIREMENTS.md"
+    - "journey/04_DATA_MODEL.md"
+    - "journey/05_STTM.md"
+    - "journey/06_DQ_PLAN.md"
+    - "journey/07_PIPELINE_SPEC.md"
+    - "journey/08_SERVING_AND_EVIDENCE.md"
+    - "journey/09_SECURITY_AND_ACCESS.md"
+
+secrets_scan:
+  # Extra regexes beyond the built-ins (literal password/api_key/secret/token assignment, AWS
+  # AKIA keys, private-key headers, connection strings with embedded passwords). Project-specific
+  # secret shapes (e.g. a vendor's token prefix) go here, not hardcoded in the .py script.
+  extra_patterns:
+    # - "MYVENDOR_[A-Za-z0-9]{32}"
+
+  # Whole files skipped entirely (path or glob, matched relative to repo root). Use for
+  # legitimately-example-only files; prefer the inline 'secrets-scan:allow' line marker for a
+  # single line inside an otherwise-real file.
+  allowlist_paths:
+    - ".env.example"
+
+boundary:
+  # Python import prefixes banned project-wide, with the reason shown on failure.
+  # Match is whole-dotted-segment (e.g. "pyspark" matches "pyspark.sql", not "pysparkling").
+  banned_imports:
+    # "pyspark": "ADR-001 — {{engine}} is the sole transform engine, Spark rejected"
+
+  # Globs where an otherwise-banned import IS sanctioned (e.g. Spark allowed only inside Glue jobs).
+  # Each key here is matched against banned_imports; if the hit file matches one of these globs,
+  # it's allowed instead of failing.
+  sanctioned_overrides:
+    # "pyspark": ["glue/*.py", "bronze/*.py"]
+
+  # dbt (or equivalent) profile files whose adapter/`type:` must equal locked_adapter.
+  profile_files: []
+    # - "dbt_project/profiles.yml"
+  locked_adapter: "{{e.g. duckdb, snowflake}}"
+
+  # Free-text ingestion allowlist, informational (not regex-enforced — ingestion mechanism
+  # rarely has a clean import signature). Cite in governance/BOUNDARY_CONTRACT.md too.
+  ingestion_allowlist:
+    - "{{e.g. vendor API X, manual CSV drop}}"
+
+identity:
+  grain_description: "{{e.g. content-hash asset_id, SK_ID_CURR + SCD2, cumulative-table grain}}"
+  key_columns:
+    - "{{column name(s)}}"
+
+governed_paths:
+  # Files/dirs that trigger a pre-edit reminder + post-edit gate run via the governance_guard
+  # hook. Each entry: path substring to match, docs to cite, gates to run after edit.
+  # - match: "models/marts/"
+  #   cite: "journey/04_DATA_MODEL.md + relevant ADR"
+  #   gates: ["boundary_contract.py"]

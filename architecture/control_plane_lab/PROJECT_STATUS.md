@@ -10,6 +10,11 @@ airflow workspace + run the Sonnet kickoff, and (b) continue open design questio
 Owner said 2026-06-29: "banyak lagi nak tanya dkt session lain" — so the next CIL/Opus session is
 MORE DESIGN Q&A, not build.
 
+**Separate, now-closed sub-thread (2026-07-04):** `saboteur/04_SONNET_HANDOVER.md` (security layer
++ saboteur problem-bank wiring, all 4 units) is DONE — see root `PROJECT_STATUS.md` ▶ RESUME HERE
+for the full reconcile. Does not change the Fasa-0/Fasa-1 status above; the bank still ports to
+`airflow_dag_running_pipeline` wholesale at Fasa-1 per `saboteur/README.md`'s new port note.
+
 **Paste-ready first prompt for next session (Opus, CIL workspace):**
 `Read architecture/control_plane_lab/PROJECT_STATUS.md "▶ RESUME HERE" + 00_MASTER_SPEC + 01_OPUS_DECISIONS. Fasa-0 design of the control-plane Airflow lab (repo airflow_dag_running_pipeline) is done — 3 spec docs + _source_to_port/ bundled, 5 decisions locked, Sonnet kickoff ready. I have more design questions before building. Do NOT rebuild the spec; answer my questions and amend the spec if needed (hunt gaps first — I keep finding them).`
 
