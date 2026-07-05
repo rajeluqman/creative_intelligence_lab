@@ -77,7 +77,12 @@ is both cheaper AND more realistic for legacy SAP integration).
   │        cross_sell · dormancy · daily_flows · pipeline_health            │
   └─────────────────────────────────────────────────────────────────────────┘
       ▼
-   serving / evidence layer (journey/08)
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │ SERVING (Fasa E, optional, read-only — D-01 Addendum #2)                │
+  │   Snowflake external tables over Gold S3 + Power BI page (BQ-01/02);    │
+  │   DuckDB = $0 fallback. Lake stays sole truth (CIL ADR-005 pattern).    │
+  └─────────────────────────────────────────────────────────────────────────┘
+   + evidence layer: journey/08 (one runnable query per BQ)
 
   FASA C (later): swap Postgres/MSSQL batch arrows for CDC
   (Debezium+Kafka or platform-native mirroring) — Bronze-down UNCHANGED.
@@ -111,6 +116,6 @@ Airflow inside this repo.
 ## Companion docs in this folder
 - `01_OPUS_DECISIONS.md` — locked rulings + the one owner-ratify item (stack, D-01)
 - `02_SONNET_BUILD_KICKOFF.md` — execution handoff
-- `03_DATASET_RISKS_AND_RESOLUTIONS.md` — full risk register (28 items)
+- `03_DATASET_RISKS_AND_RESOLUTIONS.md` — full risk register (R-01…R-30)
 - `04_BUSINESS_QUESTIONS.md` — the 10 stakeholder BQs with join paths
 - `PROJECT_STATUS.md` — resume-safe status
