@@ -98,6 +98,48 @@ Sonnet MUST:
    `journey/08`. The portfolio is defended by that evidence + a local-runnable repo, never by
    an expired workspace.
 
+### Alternatives considered (interview justification — why each choice beat its rival)
+Pure architecture, trial-independent. This is the "why not X" you defend in an interview.
+
+**Compute — Databricks over AWS Glue** (both managed Spark on S3):
+- FOR Databricks: Unity Catalog (unified lineage/access/discovery — the value-add for a
+  multi-source MDM theme; Glue's Catalog+Lake Formation is more fragmented); Photon (faster
+  than Glue's OSS Spark); Delta-native (OPTIMIZE/Z-ORDER/liquid clustering/time-travel
+  first-class; bolt-on in Glue); stronger notebook dev loop; portable multi-cloud skill.
+- FOR Glue (what we give up): truly serverless (no cluster to size); zero-friction AWS-native
+  plumbing (IAM/Athena/Step Functions); simpler per-second cost, no idle-cluster risk.
+- Verdict: the project sells a GOVERNANCE story; UC is exactly that. Glue runs the same Spark
+  but tells a weaker story.
+
+**Storage — S3-as-truth (external Delta) over data-inside-Databricks (managed):**
+- FOR S3-truth: open/no-lock-in (any engine reads plain Delta+Parquet — this is the ONLY
+  reason Snowflake-serving is possible); compute/storage fully decoupled (wipe+rebuild compute,
+  lake untouched); own the bucket lifecycle/cost/encryption.
+- Cost of S3-truth: a little more setup (UC external locations + storage creds); some
+  managed-table auto-optimization (predictive optimization, auto-vacuum) is smoothest on
+  fully-managed tables. Nuance: UC managed tables CAN use your own S3 as managed location —
+  so you keep most ergonomics without the lock-in.
+- FOR managed (what we give up): simpler, Databricks owns layout/vacuum/newest features first.
+  But: lock-in (external engines can't read it; Snowflake would need unload/Delta-Share) and
+  data lifecycle coupled to the workspace. Kills the multi-engine architecture.
+- Verdict: multi-engine (Databricks transforms + Snowflake serves) REQUIRES open storage.
+  S3-truth is decisive.
+
+**Serving — Snowflake over Databricks-SQL-only** (Databricks CAN serve BI directly, so this
+is a deliberate addition, not a necessity — say so honestly):
+- FOR Snowflake: separation of concerns (BI isolated from transform clusters, scales
+  independently); best-in-class concurrent BI (elastic warehouses, caching); mirrors the real
+  "Databricks-for-eng + Snowflake-for-serving" enterprise split — a credible interview story
+  that puts a resume tech to genuine use.
+- Cost of Snowflake: a second platform + two governance models (UC + Snowflake RBAC);
+  external-table-over-S3 latency (native perf needs copy-in/duplication or Iceberg tables;
+  external tables are fine for a demo).
+- FOR Databricks-only (what we give up): one platform end-to-end, UC governs everything, zero
+  data movement, always fresh, lower cost/complexity.
+- Verdict: keep Snowflake as a deliberate "demonstrate the two-platform integration" choice,
+  NOT because Databricks-SQL can't serve. Dropping Snowflake would cost nothing functionally —
+  be ready to say exactly that.
+
 ## D-13 — Terraform: OUT of v1 (owner asked 2026-07-05)
 The project's cloud infra surface is ~3 resources (S3 prefix, 1 read-only IAM policy/key for
 serving, optionally an S3 lifecycle rule); local "infra" is docker-compose, which is already
